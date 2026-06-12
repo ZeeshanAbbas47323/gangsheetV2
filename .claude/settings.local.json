@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(\\(Get-ChildItem -Force -Recurse -ErrorAction SilentlyContinue | Measure-Object\\).Count; Get-Location)",
+      "PowerShell(node --version)",
+      "PowerShell(npm --version)"
+    ]
+  }
+}
