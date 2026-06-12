@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef, useState } from "react";
+import { useImageTools } from "@/hooks/useImageTools";
 import { ACCEPT_ATTR } from "@/lib/files";
 import { useBuilder } from "@/lib/store";
 import { useUploads } from "./useUploads";
@@ -10,8 +11,9 @@ export default function LibrarySidebar() {
   const uploads = useBuilder((s) => s.uploads);
   const removeAsset = useBuilder((s) => s.removeAsset);
   const renameAsset = useBuilder((s) => s.renameAsset);
-  const addElementFromAsset = useBuilder((s) => s.addElementFromAsset);
+  const queuePlacement = useBuilder((s) => s.queuePlacement);
   const { importFiles } = useUploads();
+  const { processAsset, processing } = useImageTools();
 
   const inputRef = useRef<HTMLInputElement>(null);
   const [search, setSearch] = useState("");
@@ -130,8 +132,8 @@ export default function LibrarySidebar() {
                     e.dataTransfer.setData("application/x-asset-id", asset.id);
                     e.dataTransfer.effectAllowed = "copy";
                   }}
-                  onClick={() => addElementFromAsset(asset.id)}
-                  title={`${asset.name} — click or drag to add (${asset.naturalWidth}×${asset.naturalHeight}px)`}
+                  onClick={() => queuePlacement([asset.id])}
+                  title={`${asset.name} — click to set size & quantity, drag to place directly (${asset.naturalWidth}×${asset.naturalHeight}px)`}
                   className="flex h-20 cursor-grab items-center justify-center overflow-hidden rounded bg-[conic-gradient(#e3e6ea_90deg,#f7f8fa_90deg_180deg,#e3e6ea_180deg_270deg,#f7f8fa_270deg)] bg-[length:14px_14px] active:cursor-grabbing"
                 >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -166,6 +168,38 @@ export default function LibrarySidebar() {
                     {asset.name}
                   </p>
                 )}
+                <div className="mt-1 flex gap-1">
+                  <button
+                    type="button"
+                    disabled={!!processing[asset.id] || asset.bgRemoved}
+                    onClick={() => void processAsset(asset.id, "remove-bg")}
+                    title={asset.bgRemoved ? "Background already removed" : "Remove background"}
+                    className="flex h-5 flex-1 items-center justify-center gap-0.5 rounded bg-surface-3 text-[9px] font-medium text-gray-300 hover:bg-surface-3/70 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {processing[asset.id] === "remove-bg" ? (
+                      <span className="h-2.5 w-2.5 animate-spin rounded-full border border-gray-400 border-t-transparent" />
+                    ) : asset.bgRemoved ? (
+                      "BG ✓"
+                    ) : (
+                      "Rm BG"
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!!processing[asset.id] || asset.upscaled}
+                    onClick={() => void processAsset(asset.id, "upscale")}
+                    title={asset.upscaled ? "Already upscaled" : "Upscale image"}
+                    className="flex h-5 flex-1 items-center justify-center gap-0.5 rounded bg-surface-3 text-[9px] font-medium text-gray-300 hover:bg-surface-3/70 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {processing[asset.id] === "upscale" ? (
+                      <span className="h-2.5 w-2.5 animate-spin rounded-full border border-gray-400 border-t-transparent" />
+                    ) : asset.upscaled ? (
+                      "HD ✓"
+                    ) : (
+                      "Upscale"
+                    )}
+                  </button>
+                </div>
                 <button
                   type="button"
                   onClick={() => removeAsset(asset.id)}

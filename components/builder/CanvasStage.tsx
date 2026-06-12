@@ -656,7 +656,8 @@ export default function CanvasStage() {
       return;
     }
     if (e.dataTransfer.files.length > 0) {
-      const imported = await importFiles(e.dataTransfer.files);
+      // dropping on the canvas is an explicit placement — skip the size modal
+      const imported = await importFiles(e.dataTransfer.files, false);
       imported.forEach((asset, i) => {
         useBuilder
           .getState()

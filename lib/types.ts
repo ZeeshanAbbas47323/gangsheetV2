@@ -29,6 +29,22 @@ export interface LibraryAsset {
   sizeBytes: number;
   mimeType: string;
   createdAt: number;
+  /** Source resolution from file metadata; DTF default 300 when absent. */
+  dpi?: number;
+  /** Set after a successful background-removal pass. */
+  bgRemoved?: boolean;
+  /** Set after a successful upscale pass. */
+  upscaled?: boolean;
+}
+
+export type ImageToolOp = "remove-bg" | "upscale";
+
+/** Per-asset size/quantity chosen in the pre-placement modal. */
+export interface PlacementSpec {
+  assetId: string;
+  widthIn: number;
+  heightIn: number;
+  quantity: number;
 }
 
 export interface ImageElement {

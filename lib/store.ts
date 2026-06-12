@@ -6,6 +6,7 @@ import type {
   AlignType,
   CanvasElement,
   ExportJob,
+  ImageToolOp,
   LibraryAsset,
   SheetConfig,
   Toast,
@@ -46,6 +47,10 @@ export interface BuilderState {
   quantity: number;
   nestStats: NestStats | null;
   exportJobs: ExportJob[];
+  /** Asset ids waiting in the pre-placement (size & quantity) modal. */
+  pendingPlacement: string[];
+  /** Per-asset in-flight image tool (remove-bg / upscale). */
+  assetProcessing: Record<string, ImageToolOp | undefined>;
 
   past: Snapshot[];
   future: Snapshot[];
@@ -86,12 +91,23 @@ export interface BuilderState {
   addAssets: (assets: LibraryAsset[]) => void;
   removeAsset: (id: string) => void;
   renameAsset: (id: string, name: string) => void;
+  updateAsset: (id: string, patch: Partial<LibraryAsset>) => void;
+  setAssetProcessing: (id: string, op: ImageToolOp | undefined) => void;
+
+  // placement queue
+  queuePlacement: (assetIds: string[]) => void;
+  dequeuePlacement: (assetId: string) => void;
+  clearPlacementQueue: () => void;
 
   // elements (all history-committing unless noted)
   addElementFromAsset: (
     assetId: string,
     center?: { x: number; y: number }
   ) => string | null;
+  /** Insert pre-positioned elements as one undo step and select them. */
+  addElements: (elements: CanvasElement[]) => void;
+  /** Atomic auto-build commit: new sheet height + new elements, one undo step. */
+  applyAutoBuild: (elements: CanvasElement[], sheetHeightIn: number) => void;
   deleteSelected: () => void;
   duplicateSelected: () => void;
   /** Transient update — does NOT push history. Pair with begin/endTransient. */
@@ -157,6 +173,8 @@ export const useBuilder = create<BuilderState>((set, get) => {
     quantity: 1,
     nestStats: null,
     exportJobs: [],
+    pendingPlacement: [],
+    assetProcessing: {},
     past: [],
     future: [],
 
@@ -262,15 +280,37 @@ export const useBuilder = create<BuilderState>((set, get) => {
       set((s) => ({
         assets: s.assets.map((a) => (a.id === id ? { ...a, name } : a)),
       })),
+    updateAsset: (id, patch) =>
+      set((s) => ({
+        assets: s.assets.map((a) => (a.id === id ? { ...a, ...patch } : a)),
+      })),
+    setAssetProcessing: (id, op) =>
+      set((s) => ({
+        assetProcessing: { ...s.assetProcessing, [id]: op },
+      })),
+
+    queuePlacement: (assetIds) =>
+      set((s) => ({
+        pendingPlacement: [
+          ...s.pendingPlacement,
+          ...assetIds.filter((id) => !s.pendingPlacement.includes(id)),
+        ],
+      })),
+    dequeuePlacement: (assetId) =>
+      set((s) => ({
+        pendingPlacement: s.pendingPlacement.filter((id) => id !== assetId),
+      })),
+    clearPlacementQueue: () => set({ pendingPlacement: [] }),
 
     addElementFromAsset: (assetId, center) => {
       const { assets, sheet, elements } = get();
       const asset = assets.find((a) => a.id === assetId);
       if (!asset) return null;
 
-      // Natural physical size at the sheet DPI, capped so it fits the sheet.
-      let w = asset.naturalWidth / sheet.dpi;
-      let h = asset.naturalHeight / sheet.dpi;
+      // Natural physical size at the source DPI, capped so it fits the sheet.
+      const srcDpi = asset.dpi ?? 300;
+      let w = asset.naturalWidth / srcDpi;
+      let h = asset.naturalHeight / srcDpi;
       const maxW = sheet.widthIn * 0.9;
       const maxH = sheet.heightIn * 0.9;
       const fit = Math.min(1, maxW / w, maxH / h);
@@ -296,6 +336,24 @@ export const useBuilder = create<BuilderState>((set, get) => {
       commit();
       set({ elements: [...elements, el], selectedIds: [el.id] });
       return el.id;
+    },
+
+    addElements: (els) => {
+      if (els.length === 0) return;
+      commit();
+      set((s) => ({
+        elements: [...s.elements, ...els],
+        selectedIds: els.map((e) => e.id),
+      }));
+    },
+
+    applyAutoBuild: (els, sheetHeightIn) => {
+      commit();
+      set((s) => ({
+        sheet: { ...s.sheet, heightIn: clampSheetDim(sheetHeightIn) },
+        elements: [...s.elements, ...els],
+        selectedIds: els.map((e) => e.id),
+      }));
     },
 
     deleteSelected: () => {

@@ -6,6 +6,7 @@ import ExportModal from "./ExportModal";
 import ExportQueue from "./ExportQueue";
 import LibrarySidebar from "./LibrarySidebar";
 import NestPanel from "./NestPanel";
+import PlacementModal from "./PlacementModal";
 import PropertiesPanel from "./PropertiesPanel";
 import Ruler, { RULER_THICKNESS } from "./Ruler";
 import SheetConfigPanel from "./SheetConfigPanel";
@@ -59,6 +60,7 @@ export default function BuilderShell() {
       <ShortcutsModal />
       <ExportModal />
       <ExportQueue />
+      <PlacementModal />
     </div>
   );
 }

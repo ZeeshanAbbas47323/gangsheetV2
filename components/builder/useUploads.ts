@@ -11,9 +11,17 @@ export function useUploads() {
   const addAssets = useBuilder((s) => s.addAssets);
   const setUploads = useBuilder((s) => s.setUploads);
   const pushToast = useBuilder((s) => s.pushToast);
+  const queuePlacement = useBuilder((s) => s.queuePlacement);
 
+  /**
+   * Import files into the library. With `openPlacement` (default) the
+   * size-and-quantity modal opens afterwards instead of placing directly.
+   */
   const importFiles = useCallback(
-    async (files: FileList | File[]): Promise<LibraryAsset[]> => {
+    async (
+      files: FileList | File[],
+      openPlacement = true
+    ): Promise<LibraryAsset[]> => {
       const list = Array.from(files);
       if (list.length === 0) return [];
 
@@ -57,10 +65,11 @@ export function useUploads() {
             ? `Imported "${imported[0].name}"`
             : `Imported ${imported.length} images`
         );
+        if (openPlacement) queuePlacement(imported.map((a) => a.id));
       }
       return imported;
     },
-    [addAssets, setUploads, pushToast]
+    [addAssets, setUploads, pushToast, queuePlacement]
   );
 
   return { importFiles };

@@ -3,7 +3,8 @@
     "allow": [
       "PowerShell(\\(Get-ChildItem -Force -Recurse -ErrorAction SilentlyContinue | Measure-Object\\).Count; Get-Location)",
       "PowerShell(node --version)",
-      "PowerShell(npm --version)"
+      "PowerShell(npm --version)",
+      "mcp__Claude_Preview__preview_start"
     ]
   }
 }
