@@ -2,24 +2,30 @@
 
 import { useCallback, useState } from "react";
 import { uid } from "@/lib/id";
-import { nestInWorker, requiredHeightInWorker } from "@/lib/nesting/client";
+import { nestInWorker } from "@/lib/nesting/client";
 import type {
   NestItem,
+  NestOptions,
   NestPlacement,
-  NestRequest,
   ObstacleRect,
 } from "@/lib/nesting/types";
-import { MAX_SHEET_IN } from "@/lib/presets";
-import { useBuilder } from "@/lib/store";
-import type { CanvasElement, PlacementSpec } from "@/lib/types";
+import {
+  MAX_SHEET_IN,
+  SHEET_WIDTH_IN,
+  smallestHeightFor,
+} from "@/lib/presets";
+import { useBuilder, type SheetBuild } from "@/lib/store";
+import type { CanvasElement, ImageElement, PlacementSpec } from "@/lib/types";
 import { elementAABB } from "@/lib/units";
 
 const PLACE_SPACING_IN = 0.125;
+/** Safety ceiling so a pathological batch can't spawn unbounded sheets. */
+const MAX_SHEETS = 40;
 
-function defaultNestOptions(margin = 0) {
+function nestOptions(margin = 0): NestOptions {
   return {
-    mode: "compact" as const,
-    optimization: "balanced" as const,
+    mode: "compact",
+    optimization: "balanced",
     allowRotation: true,
     spacing: PLACE_SPACING_IN,
     margin,
@@ -28,13 +34,13 @@ function defaultNestOptions(margin = 0) {
   };
 }
 
-/** Expand specs into one nest item per copy. */
+/** Expand placement specs into one nest item per copy. */
 function specsToItems(specs: PlacementSpec[]): NestItem[] {
   const items: NestItem[] = [];
   for (const spec of specs) {
     for (let i = 0; i < spec.quantity; i++) {
       items.push({
-        id: `${spec.assetId}#${i}`,
+        id: `${spec.assetId}#${uid()}`,
         w: spec.widthIn,
         h: spec.heightIn,
         hash: `${spec.assetId}|${spec.widthIn.toFixed(3)}x${spec.heightIn.toFixed(3)}`,
@@ -44,31 +50,25 @@ function specsToItems(specs: PlacementSpec[]): NestItem[] {
   return items;
 }
 
-function visibleObstacles(): ObstacleRect[] {
-  const { elements } = useBuilder.getState();
+function obstaclesFrom(elements: CanvasElement[]): ObstacleRect[] {
   return elements
     .filter((e) => e.visible)
     .map((e) => {
-      const box = elementAABB(e);
-      return {
-        left: box.left,
-        top: box.top,
-        right: box.right,
-        bottom: box.bottom,
-      };
+      const b = elementAABB(e);
+      return { left: b.left, top: b.top, right: b.right, bottom: b.bottom };
     });
 }
 
-/** Materialize nest placements into canvas elements for their specs. */
+/** Turn nest placements into image elements, resolving each item's spec. */
 function placementsToElements(
   placements: NestPlacement[],
-  specs: PlacementSpec[]
-): CanvasElement[] {
+  specByAsset: Map<string, PlacementSpec>
+): ImageElement[] {
   const { assets } = useBuilder.getState();
-  const els: CanvasElement[] = [];
+  const els: ImageElement[] = [];
   for (const p of placements) {
     const assetId = p.id.split("#")[0];
-    const spec = specs.find((s) => s.assetId === assetId);
+    const spec = specByAsset.get(assetId);
     const asset = assets.find((a) => a.id === assetId);
     if (!spec || !asset) continue;
     els.push({
@@ -91,154 +91,124 @@ function placementsToElements(
   return els;
 }
 
-/** Stack elements that did not fit in a column beside the sheet. */
-function overflowElements(
-  overflowIds: string[],
-  specs: PlacementSpec[]
-): CanvasElement[] {
-  const { assets, sheet } = useBuilder.getState();
-  const els: CanvasElement[] = [];
-  let y = 0.5;
-  for (const id of overflowIds) {
-    const assetId = id.split("#")[0];
-    const spec = specs.find((s) => s.assetId === assetId);
-    const asset = assets.find((a) => a.id === assetId);
-    if (!spec || !asset) continue;
-    els.push({
-      id: uid(),
-      type: "image",
-      assetId,
-      name: asset.name,
-      x: sheet.widthIn + 1 + spec.widthIn / 2,
-      y: y + spec.heightIn / 2,
-      widthIn: spec.widthIn,
-      heightIn: spec.heightIn,
-      rotation: 0,
-      flipX: false,
-      flipY: false,
-      opacity: 1,
-      locked: false,
-      visible: true,
+interface PackedSheet {
+  heightIn: number;
+  placements: NestPlacement[];
+}
+
+/**
+ * Greedy multi-sheet packer. Fills one sheet at a time at the maximum height,
+ * spilling overflow onto fresh sheets, until every item is placed (or the
+ * sheet ceiling is hit). The first sheet may use a fixed height (Place on
+ * Sheet) or auto-size to the smallest fit (Auto Build).
+ */
+async function packIntoSheets(
+  items: NestItem[],
+  opts: { firstHeightFixed?: number; firstObstacles?: ObstacleRect[] }
+): Promise<{ sheets: PackedSheet[]; unplaceable: string[] }> {
+  const out: PackedSheet[] = [];
+  let remaining = items;
+  let first = true;
+
+  while (remaining.length > 0 && out.length < MAX_SHEETS) {
+    const fixed = first ? opts.firstHeightFixed : undefined;
+    const workingHeight = fixed ?? MAX_SHEET_IN;
+    const obstacles = first ? opts.firstObstacles ?? [] : [];
+
+    const res = await nestInWorker({
+      items: remaining,
+      sheetWidth: SHEET_WIDTH_IN,
+      sheetHeight: workingHeight,
+      options: nestOptions(),
+      obstacles,
     });
-    y += spec.heightIn + 0.5;
+
+    if (res.placements.length === 0) {
+      // nothing fits on a fresh max-height sheet → genuinely unplaceable
+      return { sheets: out, unplaceable: remaining.map((i) => i.id) };
+    }
+
+    // Determine the sheet's final height: fixed, or the smallest size that
+    // holds the packed content (plus any first-sheet obstacles).
+    let usedBottom = 0;
+    for (const p of res.placements) usedBottom = Math.max(usedBottom, p.y + p.h);
+    if (first && opts.firstObstacles) {
+      for (const o of opts.firstObstacles) usedBottom = Math.max(usedBottom, o.bottom);
+    }
+    const heightIn = fixed ?? Math.min(MAX_SHEET_IN, smallestHeightFor(usedBottom));
+
+    out.push({ heightIn, placements: res.placements });
+
+    const overflow = new Set(res.overflowIds);
+    remaining = remaining.filter((i) => overflow.has(i.id));
+    first = false;
   }
-  return els;
+
+  return { sheets: out, unplaceable: remaining.map((i) => i.id) };
 }
 
 export function usePlacement() {
   const [busy, setBusy] = useState(false);
 
   /**
-   * Place the requested copies on the current sheet, nesting them around
-   * everything already there. Sheet size is untouched.
+   * Place copies onto the current sheet, packing around existing artwork.
+   * Overflow spills onto new sheets (each capped at the maximum height).
    */
   const placeAssets = useCallback(async (specs: PlacementSpec[]) => {
     const items = specsToItems(specs);
     if (items.length === 0) return;
     setBusy(true);
     try {
-      const { sheet } = useBuilder.getState();
-      const request: NestRequest = {
-        items,
-        sheetWidth: sheet.widthIn,
-        sheetHeight: sheet.heightIn,
-        options: defaultNestOptions(),
-        obstacles: visibleObstacles(),
-      };
-      const result = await nestInWorker(request);
-      const els = [
-        ...placementsToElements(result.placements, specs),
-        ...overflowElements(result.overflowIds, specs),
-      ];
-      const store = useBuilder.getState();
-      store.addElements(els);
-      if (result.overflowIds.length > 0) {
-        store.pushToast(
-          "warning",
-          `${result.overflowIds.length} cop${result.overflowIds.length === 1 ? "y" : "ies"} did not fit and were placed beside the sheet. Try Auto Build.`
-        );
-      } else {
-        store.pushToast(
-          "success",
-          `Placed ${els.length} design${els.length === 1 ? "" : "s"}`
-        );
-      }
+      const { elements } = useBuilder.getState();
+      const existing = elements;
+      const specByAsset = new Map(specs.map((s) => [s.assetId, s]));
+
+      // UPDATED: fit as much as possible onto ONE sheet by letting the active
+      // sheet grow up to the 300" maximum; only spill the genuine overflow.
+      // (Previously the first sheet was pinned to its current height, which
+      // forced unnecessary extra sheets.)
+      const { sheets, unplaceable } = await packIntoSheets(items, {
+        firstObstacles: obstaclesFrom(existing),
+      });
+
+      commitPacked(sheets, specByAsset, existing, undefined, unplaceable.length);
     } catch (err) {
-      useBuilder
-        .getState()
-        .pushToast(
-          "error",
-          err instanceof Error ? err.message : "Placement failed"
-        );
+      reportError(err, "Placement failed");
     } finally {
       setBusy(false);
     }
   }, []);
 
   /**
-   * DripApps-style Auto Build: fixed sheet width, height extended exactly as
-   * far as needed, everything nested. Existing artwork stays where it is and
-   * is packed around. One undo step.
+   * DripApps-style Auto Build: auto-size sheets to the smallest fit and split
+   * into multiple sheets when the batch exceeds the maximum height.
    */
   const autoBuild = useCallback(async (specs: PlacementSpec[]) => {
     const items = specsToItems(specs);
     if (items.length === 0) return;
     setBusy(true);
     try {
-      const { sheet } = useBuilder.getState();
-      const obstacles = visibleObstacles();
-      const base: NestRequest = {
-        items,
-        sheetWidth: sheet.widthIn,
-        sheetHeight: sheet.heightIn,
-        options: defaultNestOptions(),
-        obstacles,
-      };
-      const needed = await requiredHeightInWorker(base);
-      const targetHeight = Math.min(
-        MAX_SHEET_IN,
-        Math.max(sheet.heightIn, Math.ceil(needed * 4) / 4)
-      );
-      const result = await nestInWorker({
-        ...base,
-        sheetHeight: targetHeight,
+      const { elements } = useBuilder.getState();
+      const existing = elements;
+      const specByAsset = new Map(specs.map((s) => [s.assetId, s]));
+
+      const { sheets, unplaceable } = await packIntoSheets(items, {
+        firstObstacles: obstaclesFrom(existing),
       });
-      const els = [
-        ...placementsToElements(result.placements, specs),
-        ...overflowElements(result.overflowIds, specs),
-      ];
-      const store = useBuilder.getState();
-      store.applyAutoBuild(els, targetHeight);
-      store.setNestStats(result.stats);
-      store.requestFit();
-      store.pushToast(
-        result.overflowIds.length > 0
-          ? "warning"
-          : "success",
-        result.overflowIds.length > 0
-          ? `Sheet maxed out at ${MAX_SHEET_IN}" — ${result.overflowIds.length} copies did not fit`
-          : `Auto-built ${store.sheet.widthIn}" × ${targetHeight}" sheet with ${result.placements.length} designs`
-      );
+
+      commitPacked(sheets, specByAsset, existing, undefined, unplaceable.length);
     } catch (err) {
-      useBuilder
-        .getState()
-        .pushToast(
-          "error",
-          err instanceof Error ? err.message : "Auto Build failed"
-        );
+      reportError(err, "Auto Build failed");
     } finally {
       setBusy(false);
     }
   }, []);
 
-  /**
-   * Fill the remaining free sheet area with as many copies of the given
-   * element as fit, using standard spacing. One undo step.
-   */
+  /** Fill the remaining free space of the current sheet with copies of one design. */
   const autoFill = useCallback(async (elementId: string) => {
     const { elements, sheet, pushToast } = useBuilder.getState();
     const source = elements.find((e) => e.id === elementId);
-    if (!source) return;
+    if (!source || source.type !== "image") return;
     setBusy(true);
     try {
       const box = elementAABB(source);
@@ -257,15 +227,14 @@ export function usePlacement() {
         heightIn: box.height,
         quantity: maxCopies,
       };
-      const result = await nestInWorker({
+      const res = await nestInWorker({
         items: specsToItems([spec]),
         sheetWidth: sheet.widthIn,
         sheetHeight: sheet.heightIn,
-        options: { ...defaultNestOptions(), allowRotation: false },
-        obstacles: visibleObstacles(),
+        options: { ...nestOptions(), allowRotation: false },
+        obstacles: obstaclesFrom(elements),
       });
-      // copies inherit the source's look (rotation/flips/opacity)
-      const els: CanvasElement[] = result.placements.map((p) => ({
+      const els: CanvasElement[] = res.placements.map((p) => ({
         ...source,
         id: uid(),
         x: p.x + p.w / 2,
@@ -278,18 +247,65 @@ export function usePlacement() {
       }
       const store = useBuilder.getState();
       store.addElements(els);
-      store.pushToast("success", `Filled the sheet with ${els.length} more cop${els.length === 1 ? "y" : "ies"}`);
+      store.pushToast(
+        "success",
+        `Filled the sheet with ${els.length} more cop${els.length === 1 ? "y" : "ies"}`
+      );
     } catch (err) {
-      useBuilder
-        .getState()
-        .pushToast(
-          "error",
-          err instanceof Error ? err.message : "Auto Fill failed"
-        );
+      reportError(err, "Auto Fill failed");
     } finally {
       setBusy(false);
     }
   }, []);
 
   return { placeAssets, autoBuild, autoFill, busy };
+}
+
+// ---------------------------------------------------------------------------
+// shared commit + error helpers
+// ---------------------------------------------------------------------------
+function commitPacked(
+  packed: PackedSheet[],
+  specByAsset: Map<string, PlacementSpec>,
+  existing: CanvasElement[],
+  fixedActiveHeight: number | undefined,
+  unplaceableCount: number
+) {
+  const store = useBuilder.getState();
+  if (packed.length === 0) {
+    store.pushToast("warning", "Nothing could be placed — the designs are larger than a sheet.");
+    return;
+  }
+
+  const activeEls = [
+    ...existing,
+    ...placementsToElements(packed[0].placements, specByAsset),
+  ];
+  const activeHeight = fixedActiveHeight ?? packed[0].heightIn;
+  const extra: SheetBuild[] = packed.slice(1).map((s) => ({
+    heightIn: s.heightIn,
+    elements: placementsToElements(s.placements, specByAsset),
+  }));
+
+  store.commitBuild(activeEls, activeHeight, extra);
+
+  const placedCount = packed.reduce((n, s) => n + s.placements.length, 0);
+  const sheetWord = packed.length === 1 ? "sheet" : "sheets";
+  if (unplaceableCount > 0) {
+    store.pushToast(
+      "warning",
+      `Placed ${placedCount} designs across ${packed.length} ${sheetWord}; ${unplaceableCount} could not fit even at ${MAX_SHEET_IN}".`
+    );
+  } else {
+    store.pushToast(
+      "success",
+      `Placed ${placedCount} designs across ${packed.length} ${sheetWord}.`
+    );
+  }
+}
+
+function reportError(err: unknown, fallback: string) {
+  useBuilder
+    .getState()
+    .pushToast("error", err instanceof Error ? err.message : fallback);
 }

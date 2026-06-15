@@ -1,15 +1,12 @@
 "use client";
 
 import {
-  calculatePrice,
-  formatMoney,
   MAX_SHEET_IN,
-  MIN_SHEET_IN,
-  SHEET_PRESETS,
+  SHEET_HEIGHTS,
+  SHEET_WIDTH_IN,
 } from "@/lib/presets";
 import { useBuilder } from "@/lib/store";
 import type { Dpi } from "@/lib/types";
-import NumField from "./NumField";
 
 function Section({
   title,
@@ -58,66 +55,76 @@ function ToggleRow({
 export default function SheetConfigPanel() {
   const sheet = useBuilder((s) => s.sheet);
   const setSheet = useBuilder((s) => s.setSheet);
-  const swapOrientation = useBuilder((s) => s.swapOrientation);
-  const quantity = useBuilder((s) => s.quantity);
-  const setQuantity = useBuilder((s) => s.setQuantity);
-  const elementCount = useBuilder((s) => s.elements.length);
+  const addSheet = useBuilder((s) => s.addSheet);
 
-  const price = calculatePrice(sheet.widthIn, sheet.heightIn, quantity);
-  const isLandscape = sheet.widthIn > sheet.heightIn;
+  const heightIndex = SHEET_HEIGHTS.indexOf(sheet.heightIn);
+  const atMax = sheet.heightIn >= MAX_SHEET_IN;
+
+  const stepHeight = (dir: 1 | -1) => {
+    const idx = heightIndex === -1 ? 0 : heightIndex;
+    const next = SHEET_HEIGHTS[Math.min(SHEET_HEIGHTS.length - 1, Math.max(0, idx + dir))];
+    if (next !== undefined) setSheet({ heightIn: next });
+  };
 
   return (
     <div>
       <Section title="Sheet size">
-        <div className="mb-2 grid grid-cols-2 gap-1.5">
-          {SHEET_PRESETS.map((p) => {
-            const active =
-              (sheet.widthIn === p.widthIn && sheet.heightIn === p.heightIn) ||
-              (sheet.widthIn === p.heightIn && sheet.heightIn === p.widthIn);
-            return (
-              <button
-                key={p.label}
-                type="button"
-                onClick={() =>
-                  setSheet({ widthIn: p.widthIn, heightIn: p.heightIn })
-                }
-                className={`rounded border px-2 py-1.5 text-xs transition-colors ${
-                  active
-                    ? "border-accent bg-accent/15 text-white"
-                    : "border-surface-3 text-gray-300 hover:border-gray-500"
-                }`}
-              >
-                {p.label}
-              </button>
-            );
-          })}
+        <div className="mb-2 flex items-center justify-between rounded border border-surface-3 bg-surface-2 px-2.5 py-1.5 text-xs">
+          <span className="text-gray-400">Width (fixed)</span>
+          <span className="font-semibold tabular-nums text-gray-100">
+            {SHEET_WIDTH_IN}&quot;
+          </span>
         </div>
-        <div className="flex items-end gap-1.5">
-          <NumField
-            label="W"
-            value={sheet.widthIn}
-            min={MIN_SHEET_IN}
-            max={MAX_SHEET_IN}
-            suffix="in"
-            onCommit={(v) => setSheet({ widthIn: v })}
-          />
-          <NumField
-            label="H"
-            value={sheet.heightIn}
-            min={MIN_SHEET_IN}
-            max={MAX_SHEET_IN}
-            suffix="in"
-            onCommit={(v) => setSheet({ heightIn: v })}
-          />
+
+        <label className="mb-1.5 block text-[10px] uppercase tracking-wide text-gray-500">
+          Height
+        </label>
+        <div className="flex items-stretch gap-1.5">
           <button
             type="button"
-            onClick={swapOrientation}
-            title={`Switch to ${isLandscape ? "portrait" : "landscape"}`}
-            className="flex h-[26px] w-8 shrink-0 items-center justify-center rounded border border-surface-3 text-gray-300 hover:border-gray-500"
+            onClick={() => stepHeight(-1)}
+            disabled={heightIndex <= 0}
+            aria-label="Shorter sheet"
+            className="flex w-8 shrink-0 items-center justify-center rounded border border-surface-3 text-gray-300 hover:border-gray-500 disabled:opacity-30"
           >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 16V8a2 2 0 0 0-2-2h-8" /><path d="m15 10 4-4-4-4" /><path d="M3 8v8a2 2 0 0 0 2 2h8" /><path d="m9 14-4 4 4 4" /></svg>
+            −
+          </button>
+          <select
+            value={sheet.heightIn}
+            onChange={(e) => setSheet({ heightIn: parseFloat(e.target.value) })}
+            className="flex-1 rounded border border-surface-3 bg-surface-2 px-2 py-1.5 text-xs text-gray-100 outline-none focus:border-accent"
+          >
+            {SHEET_HEIGHTS.map((h) => (
+              <option key={h} value={h}>
+                {SHEET_WIDTH_IN}&quot; × {h}&quot;
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => stepHeight(1)}
+            disabled={atMax}
+            aria-label="Taller sheet"
+            className="flex w-8 shrink-0 items-center justify-center rounded border border-surface-3 text-gray-300 hover:border-gray-500 disabled:opacity-30"
+          >
+            +
           </button>
         </div>
+
+        {atMax && (
+          <div className="mt-2 rounded-lg border border-amber-500/40 bg-amber-950/40 p-2.5 text-[11px] text-amber-200">
+            <p className="mb-2">
+              This sheet is at the {MAX_SHEET_IN}&quot; maximum. Need more room?
+            </p>
+            <button
+              type="button"
+              onClick={addSheet}
+              className="w-full rounded bg-amber-500/20 px-2 py-1 font-medium hover:bg-amber-500/30"
+            >
+              + Create additional sheet
+            </button>
+          </div>
+        )}
       </Section>
 
       <Section title="Print settings">
@@ -199,57 +206,6 @@ export default function SheetConfigPanel() {
           checked={sheet.showSafeZone}
           onChange={(v) => setSheet({ showSafeZone: v })}
         />
-      </Section>
-
-      <Section title="Price estimate">
-        <div className="mb-2 flex items-center justify-between text-xs text-gray-300">
-          <span>Sheets</span>
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => setQuantity(quantity - 1)}
-              className="h-6 w-6 rounded border border-surface-3 text-gray-300 hover:border-gray-500"
-              aria-label="Decrease quantity"
-            >
-              −
-            </button>
-            <span className="w-8 text-center tabular-nums text-gray-100">
-              {quantity}
-            </span>
-            <button
-              type="button"
-              onClick={() => setQuantity(quantity + 1)}
-              className="h-6 w-6 rounded border border-surface-3 text-gray-300 hover:border-gray-500"
-              aria-label="Increase quantity"
-            >
-              +
-            </button>
-          </div>
-        </div>
-        <div className="space-y-1 text-xs text-gray-400">
-          <div className="flex justify-between">
-            <span>
-              {sheet.widthIn}″ × {sheet.heightIn}″ sheet
-            </span>
-            <span className="tabular-nums">{formatMoney(price.unitPrice)}</span>
-          </div>
-          {price.discount > 0 && (
-            <div className="flex justify-between text-emerald-400">
-              <span>Quantity discount</span>
-              <span className="tabular-nums">
-                −{Math.round(price.discount * 100)}%
-              </span>
-            </div>
-          )}
-          <div className="flex justify-between border-t border-surface-3 pt-1.5 text-sm font-semibold text-white">
-            <span>Total</span>
-            <span className="tabular-nums">{formatMoney(price.total)}</span>
-          </div>
-          <p className="pt-1 text-[10px] text-gray-500">
-            {elementCount} design{elementCount === 1 ? "" : "s"} on sheet ·{" "}
-            {sheet.dpi} DPI
-          </p>
-        </div>
       </Section>
     </div>
   );

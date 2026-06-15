@@ -12,6 +12,8 @@ export default function LibrarySidebar() {
   const removeAsset = useBuilder((s) => s.removeAsset);
   const renameAsset = useBuilder((s) => s.renameAsset);
   const queuePlacement = useBuilder((s) => s.queuePlacement);
+  const addTextElement = useBuilder((s) => s.addTextElement);
+  const setCroppingAsset = useBuilder((s) => s.setCroppingAsset);
   const { importFiles } = useUploads();
   const { processAsset, processing } = useImageTools();
 
@@ -36,6 +38,19 @@ export default function LibrarySidebar() {
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-surface-3 bg-surface-1">
+      <div className="border-b border-surface-3 p-3">
+        <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
+          Text
+        </h2>
+        <button
+          type="button"
+          onClick={() => addTextElement()}
+          className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-surface-3 px-3 py-2 text-xs font-medium text-gray-200 transition-colors hover:border-accent hover:text-white"
+        >
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7V4h16v3M9 20h6M12 4v16" /></svg>
+          Add text
+        </button>
+      </div>
       <div className="border-b border-surface-3 p-3">
         <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-400">
           Image library
@@ -198,6 +213,16 @@ export default function LibrarySidebar() {
                     ) : (
                       "Upscale"
                     )}
+                  </button>
+                  {/* UPDATED: Crop opens the custom canvas cropper (client-side) */}
+                  <button
+                    type="button"
+                    disabled={!!processing[asset.id]}
+                    onClick={() => setCroppingAsset(asset.id)}
+                    title="Crop image"
+                    className="flex h-5 flex-1 items-center justify-center gap-0.5 rounded bg-surface-3 text-[9px] font-medium text-gray-300 hover:bg-surface-3/70 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {asset.cropped ? "Crop ✓" : "Crop"}
                   </button>
                 </div>
                 <button

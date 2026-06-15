@@ -19,8 +19,10 @@ import {
   type SnapGuide,
 } from "@/lib/snapping";
 import { useBuilder } from "@/lib/store";
+import { measureText } from "@/lib/text";
 import { elementAABB, formatLength, type AABB } from "@/lib/units";
 import CanvasElementNode from "./CanvasElementNode";
+import TextElementNode from "./TextElementNode";
 import { useUploads } from "./useUploads";
 
 const FIT_PADDING = 56;
@@ -610,8 +612,36 @@ export default function CanvasStage() {
     if (!el) return;
     const flipX = node.scaleX() < 0;
     const flipY = node.scaleY() < 0;
-    const widthIn = Math.max(MIN_ELEMENT_IN, node.width() * Math.abs(node.scaleX()));
-    const heightIn = Math.max(MIN_ELEMENT_IN, node.height() * Math.abs(node.scaleY()));
+    const sx = Math.abs(node.scaleX());
+    const sy = Math.abs(node.scaleY());
+
+    if (el.type === "text") {
+      // Resizing text scales the font size (uniform), then we re-measure the box.
+      const factor = Math.max(sx, sy);
+      const fontSize = Math.max(4, el.fontSize * factor);
+      node.scaleX(flipX ? -1 : 1);
+      node.scaleY(flipY ? -1 : 1);
+      const measured = measureText({ ...el, fontSize });
+      s.updateElementsTransient([
+        {
+          id,
+          patch: {
+            x: node.x(),
+            y: node.y(),
+            rotation: node.rotation(),
+            fontSize,
+            widthIn: measured.widthIn,
+            heightIn: measured.heightIn,
+            flipX,
+            flipY,
+          },
+        },
+      ]);
+      return;
+    }
+
+    const widthIn = Math.max(MIN_ELEMENT_IN, node.width() * sx);
+    const heightIn = Math.max(MIN_ELEMENT_IN, node.height() * sy);
     node.scaleX(flipX ? -1 : 1);
     node.scaleY(flipY ? -1 : 1);
     s.updateElementsTransient([
@@ -767,18 +797,30 @@ export default function CanvasStage() {
 
         {/* content */}
         <Layer ref={contentLayerRef}>
-          {elements.map((el) => (
-            <CanvasElementNode
-              key={el.id}
-              element={el}
-              asset={assets.find((a) => a.id === el.assetId)}
-              onSelect={handleSelect}
-              onDragStart={handleElementDragStart}
-              onDragMove={handleElementDragMove}
-              onDragEnd={handleElementDragEnd}
-              onTransformEnd={handleNodeTransformEnd}
-            />
-          ))}
+          {elements.map((el) =>
+            el.type === "text" ? (
+              <TextElementNode
+                key={el.id}
+                element={el}
+                onSelect={handleSelect}
+                onDragStart={handleElementDragStart}
+                onDragMove={handleElementDragMove}
+                onDragEnd={handleElementDragEnd}
+                onTransformEnd={handleNodeTransformEnd}
+              />
+            ) : (
+              <CanvasElementNode
+                key={el.id}
+                element={el}
+                asset={assets.find((a) => a.id === el.assetId)}
+                onSelect={handleSelect}
+                onDragStart={handleElementDragStart}
+                onDragMove={handleElementDragMove}
+                onDragEnd={handleElementDragEnd}
+                onTransformEnd={handleNodeTransformEnd}
+              />
+            )
+          )}
         </Layer>
 
         {/* overlay: guides, overlays, selection */}

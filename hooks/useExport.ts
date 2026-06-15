@@ -3,7 +3,7 @@
 import { useCallback } from "react";
 import { exportPdf } from "@/lib/export/pdf";
 import { exportPng } from "@/lib/export/png";
-import { ExportError, type ExportSettings } from "@/lib/export/types";
+import { ExportError, type ExportContext, type ExportSettings } from "@/lib/export/types";
 import { uid } from "@/lib/id";
 import { useBuilder } from "@/lib/store";
 import type { ExportJob } from "@/lib/types";
@@ -19,17 +19,39 @@ function downloadBlob(blob: Blob, fileName: string): void {
   setTimeout(() => URL.revokeObjectURL(url), 10_000);
 }
 
+/** Build an export context for every sheet in the project. */
+function allSheetContexts(): ExportContext[] {
+  const { sheets, assets } = useBuilder.getState();
+  return sheets.map((sh) => ({
+    elements: sh.elements,
+    assets,
+    sheet: sh.config,
+  }));
+}
+
 export function useExport() {
   const runExport = useCallback(async (settings: ExportSettings) => {
-    const { sheet, elements, assets, upsertExportJob, removeExportJob, pushToast } =
-      useBuilder.getState();
+    const { upsertExportJob, removeExportJob, pushToast } = useBuilder.getState();
+    // UPDATED: export every sheet in the project, not just the active one.
+    const contexts = allSheetContexts();
+    const sheetCount = contexts.length;
 
-    const fileName = `gangsheet-${sheet.widthIn}x${sheet.heightIn}-${settings.dpi}dpi.${settings.format}`;
+    const baseName = `gangsheet-${settings.dpi}dpi`;
+    const fileName =
+      settings.format === "pdf"
+        ? `${baseName}.pdf`
+        : sheetCount > 1
+          ? `${baseName}-${sheetCount}-sheets.zip-less` // placeholder; per-sheet names below
+          : `${baseName}.png`;
+
     const job: ExportJob = {
       id: uid(),
       format: settings.format,
       dpi: settings.dpi,
-      fileName,
+      fileName:
+        settings.format === "png" && sheetCount > 1
+          ? `${sheetCount} PNG sheets`
+          : fileName,
       stage: "queued",
       progress: 0,
     };
@@ -39,33 +61,60 @@ export function useExport() {
       upsertExportJob({ ...job, stage, progress: Math.round(progress) });
 
     try {
-      const ctx = { elements, assets, sheet };
-      const blob =
-        settings.format === "png"
-          ? await exportPng(ctx, settings.dpi, onProgress)
-          : await exportPdf(
-              ctx,
-              {
-                dpi: settings.dpi,
-                cropMarks: settings.cropMarks,
-                includeBleed: settings.includeBleed,
-              },
-              onProgress
-            );
-
-      upsertExportJob({ ...job, stage: "done", progress: 100 });
-      downloadBlob(blob, fileName);
-      if (process.env.NODE_ENV === "development") {
-        (window as unknown as { __lastExport?: object }).__lastExport = {
-          blob,
-          fileName,
-          format: settings.format,
-          dpi: settings.dpi,
-        };
+      if (settings.format === "pdf") {
+        // single multi-page document
+        const blob = await exportPdf(
+          contexts,
+          {
+            dpi: settings.dpi,
+            cropMarks: settings.cropMarks,
+            includeBleed: settings.includeBleed,
+          },
+          onProgress
+        );
+        upsertExportJob({ ...job, stage: "done", progress: 100 });
+        downloadBlob(blob, `${baseName}.pdf`);
+        if (process.env.NODE_ENV === "development") {
+          (window as unknown as { __lastExport?: object }).__lastExport = {
+            blob,
+            fileName: `${baseName}.pdf`,
+            format: "pdf",
+            dpi: settings.dpi,
+            sheets: sheetCount,
+          };
+        }
+        pushToast(
+          "success",
+          `Exported ${sheetCount}-page PDF (${sheetCount} sheet${sheetCount === 1 ? "" : "s"})`
+        );
+      } else {
+        // one PNG per sheet, downloaded sequentially
+        const blobs: Blob[] = [];
+        for (let i = 0; i < contexts.length; i++) {
+          const blob = await exportPng(contexts[i], settings.dpi, (stage, p) =>
+            onProgress(stage, ((i + p / 100) / contexts.length) * 100)
+          );
+          blobs.push(blob);
+          const name =
+            sheetCount > 1 ? `${baseName}-sheet-${i + 1}.png` : `${baseName}.png`;
+          downloadBlob(blob, name);
+        }
+        upsertExportJob({ ...job, stage: "done", progress: 100 });
+        if (process.env.NODE_ENV === "development") {
+          (window as unknown as { __lastExport?: object }).__lastExport = {
+            blobs,
+            format: "png",
+            dpi: settings.dpi,
+            sheets: sheetCount,
+          };
+        }
+        pushToast(
+          "success",
+          `Exported ${sheetCount} PNG sheet${sheetCount === 1 ? "" : "s"}`
+        );
       }
-      pushToast("success", `Exported ${fileName}`);
       setTimeout(() => removeExportJob(job.id), 4000);
-      return blob;
+      return true;
     } catch (err) {
       const message =
         err instanceof ExportError
@@ -74,11 +123,11 @@ export function useExport() {
       upsertExportJob({ ...job, stage: "error", progress: 0, error: message });
       pushToast("error", message);
       setTimeout(() => removeExportJob(job.id), 8000);
-      return null;
+      return false;
     }
   }, []);
 
-  /** Sequential batch export (PNG + PDF, multiple DPIs, …). */
+  /** Sequential batch export (e.g. PNG + PDF together). */
   const runBatch = useCallback(
     async (batch: ExportSettings[]) => {
       for (const settings of batch) {

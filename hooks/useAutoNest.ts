@@ -43,7 +43,7 @@ function buildRequest(
         id: e.id,
         w: box.width,
         h: box.height,
-        hash: `${e.assetId}|${box.width.toFixed(3)}x${box.height.toFixed(3)}`,
+        hash: `${e.type === "image" ? e.assetId : "text:" + e.id}|${box.width.toFixed(3)}x${box.height.toFixed(3)}`,
       };
     }),
     sheetWidth: sheet.widthIn,
@@ -58,6 +58,7 @@ function warnLowDpi(scale: number): void {
   if (scale >= 1) return;
   const { elements, assets, pushToast } = useBuilder.getState();
   const low = elements.filter((e) => {
+    if (e.type !== "image") return false;
     const asset = assets.find((a) => a.id === e.assetId);
     return asset && asset.naturalWidth / e.widthIn < LOW_DPI_THRESHOLD;
   });

@@ -2,13 +2,14 @@
 
 import type Konva from "konva";
 import type { KonvaEventObject } from "konva/lib/Node";
-import { Image as KonvaImage } from "react-konva";
-import useImage from "use-image";
-import type { ImageElement, LibraryAsset } from "@/lib/types";
+import { Text as KonvaText } from "react-konva";
+import { fontStack } from "@/lib/text";
+import type { TextElement } from "@/lib/types";
+
+const PT_PER_IN = 72;
 
 interface Props {
-  element: ImageElement;
-  asset: LibraryAsset | undefined;
+  element: TextElement;
   onSelect: (e: KonvaEventObject<MouseEvent | Event>, id: string) => void;
   onDragStart: (e: KonvaEventObject<DragEvent>, id: string) => void;
   onDragMove: (e: KonvaEventObject<DragEvent>, id: string) => void;
@@ -16,34 +17,46 @@ interface Props {
   onTransformEnd: (node: Konva.Node, id: string) => void;
 }
 
-export default function CanvasElementNode({
+/** Renders a text element on the inch-scaled Konva stage. */
+export default function TextElementNode({
   element: el,
-  asset,
   onSelect,
   onDragStart,
   onDragMove,
   onDragEnd,
   onTransformEnd,
 }: Props) {
-  const [image] = useImage(asset?.src ?? "", "anonymous");
+  if (!el.visible) return null;
 
-  if (!el.visible || !asset) return null;
+  // font size is in points; stage units are inches → divide by 72
+  const fontSizeIn = el.fontSize / PT_PER_IN;
+  const fontStyle = `${el.italic ? "italic " : ""}${el.fontWeight}`;
 
   return (
-    <KonvaImage
+    <KonvaText
       id={el.id}
       name="element"
-      image={image}
+      text={el.text}
       x={el.x}
       y={el.y}
       width={el.widthIn}
-      height={el.heightIn}
       offsetX={el.widthIn / 2}
       offsetY={el.heightIn / 2}
       scaleX={el.flipX ? -1 : 1}
       scaleY={el.flipY ? -1 : 1}
       rotation={el.rotation}
       opacity={el.opacity}
+      fontFamily={fontStack(el.fontFamily)}
+      fontSize={fontSizeIn}
+      fontStyle={fontStyle}
+      align={el.align}
+      lineHeight={el.lineHeight}
+      letterSpacing={el.letterSpacing / PT_PER_IN}
+      fill={el.color}
+      stroke={el.outlineWidth > 0 ? el.outlineColor : undefined}
+      strokeWidth={el.outlineWidth > 0 ? el.outlineWidth / PT_PER_IN : 0}
+      fillAfterStrokeEnabled
+      textDecoration={el.underline ? "underline" : ""}
       draggable={!el.locked}
       onClick={(e) => onSelect(e, el.id)}
       onTap={(e) => onSelect(e, el.id)}

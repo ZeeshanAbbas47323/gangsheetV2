@@ -35,9 +35,14 @@ export interface LibraryAsset {
   bgRemoved?: boolean;
   /** Set after a successful upscale pass. */
   upscaled?: boolean;
+  /** Set after a successful (client-side canvas) crop. */
+  cropped?: boolean;
+  /** Set after a successful ClipDrop remove-text pass. */
+  textRemoved?: boolean;
 }
 
-export type ImageToolOp = "remove-bg" | "upscale";
+// UPDATED: ClipDrop server-side ops (crop is handled client-side, not here).
+export type ImageToolOp = "remove-bg" | "upscale" | "remove-text";
 
 /** Per-asset size/quantity chosen in the pre-placement modal. */
 export interface PlacementSpec {
@@ -47,18 +52,17 @@ export interface PlacementSpec {
   quantity: number;
 }
 
-export interface ImageElement {
+/** Geometry + behaviour shared by every element type on a sheet. */
+export interface BaseElement {
   id: string;
-  type: "image";
-  assetId: string;
   name: string;
   /** Center position on the sheet, in inches. */
   x: number;
   y: number;
-  /** Physical size in inches. */
+  /** Axis-aligned physical size in inches (the transform box). */
   widthIn: number;
   heightIn: number;
-  /** Degrees. */
+  /** Degrees, clockwise. */
   rotation: number;
   flipX: boolean;
   flipY: boolean;
@@ -68,7 +72,52 @@ export interface ImageElement {
   visible: boolean;
 }
 
-export type CanvasElement = ImageElement;
+export interface ImageElement extends BaseElement {
+  type: "image";
+  assetId: string;
+}
+
+export type TextAlign = "left" | "center" | "right";
+
+export interface TextElement extends BaseElement {
+  type: "text";
+  text: string;
+  fontFamily: string;
+  /** Font size in points (1pt = 1/72 inch). */
+  fontSize: number;
+  fontWeight: number;
+  italic: boolean;
+  underline: boolean;
+  align: TextAlign;
+  /** Fill colour. */
+  color: string;
+  /** Outline/stroke colour. */
+  outlineColor: string;
+  /** Outline width in points; 0 = no outline. */
+  outlineWidth: number;
+  /** Extra letter spacing in points. */
+  letterSpacing: number;
+  /** Line height multiplier. */
+  lineHeight: number;
+}
+
+export type CanvasElement = ImageElement | TextElement;
+
+export function isImageElement(el: CanvasElement): el is ImageElement {
+  return el.type === "image";
+}
+
+export function isTextElement(el: CanvasElement): el is TextElement {
+  return el.type === "text";
+}
+
+/** One gang sheet: its own configuration and stack of elements. */
+export interface Sheet {
+  id: string;
+  name: string;
+  config: SheetConfig;
+  elements: CanvasElement[];
+}
 
 export type AlignType =
   | "left"

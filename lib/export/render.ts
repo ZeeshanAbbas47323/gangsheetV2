@@ -1,9 +1,63 @@
-import type { LibraryAsset } from "../types";
+import { fontStack } from "../text";
+import type { LibraryAsset, TextElement } from "../types";
 import { ExportError, type ExportContext, type ProgressCallback } from "./types";
 
 /** Conservative cross-browser canvas ceilings (Chrome allows more). */
 const MAX_CANVAS_DIM = 32767;
 const MAX_CANVAS_AREA = 268_000_000; // ~16384² (Chrome's area limit)
+
+/**
+ * Draw a text element centered at the current (already translated/rotated)
+ * origin. Font size is in points → pixels at `dpi/72`.
+ */
+function drawText(
+  ctx: CanvasRenderingContext2D,
+  el: TextElement,
+  dpi: number
+): void {
+  const pxPerPt = dpi / 72;
+  const fontPx = el.fontSize * pxPerPt;
+  ctx.font = `${el.italic ? "italic " : ""}${el.fontWeight} ${fontPx}px ${fontStack(el.fontFamily)}`;
+  ctx.textAlign = el.align === "left" ? "left" : el.align === "right" ? "right" : "center";
+  ctx.textBaseline = "middle";
+  if ("letterSpacing" in ctx) {
+    try {
+      (ctx as unknown as { letterSpacing: string }).letterSpacing = `${el.letterSpacing * pxPerPt}px`;
+    } catch {
+      /* not supported — ignore */
+    }
+  }
+
+  const lines = el.text.split("\n");
+  const lineH = fontPx * el.lineHeight;
+  const totalH = lineH * lines.length;
+  const halfW = (el.widthIn / 2) * dpi;
+  const startX = el.align === "left" ? -halfW : el.align === "right" ? halfW : 0;
+
+  lines.forEach((line, i) => {
+    const y = -totalH / 2 + lineH * (i + 0.5);
+    if (el.outlineWidth > 0) {
+      ctx.lineWidth = el.outlineWidth * pxPerPt;
+      ctx.strokeStyle = el.outlineColor;
+      ctx.lineJoin = "round";
+      ctx.strokeText(line, startX, y);
+    }
+    ctx.fillStyle = el.color;
+    ctx.fillText(line, startX, y);
+    if (el.underline) {
+      const w = ctx.measureText(line).width;
+      const ux = el.align === "left" ? startX : el.align === "right" ? startX - w : -w / 2;
+      ctx.fillRect(ux, y + fontPx * 0.34, w, Math.max(1, fontPx * 0.06));
+    }
+  });
+  if ("letterSpacing" in ctx) {
+    try {
+      (ctx as unknown as { letterSpacing: string }).letterSpacing = "0px";
+    } catch {
+      /* ignore */
+    }
+  }
+}
 
 export function outputPixelSize(
   widthIn: number,
@@ -75,9 +129,12 @@ export async function renderSheetToCanvas(
 
   onProgress?.("preparing", 0);
   const visible = elements.filter((e) => e.visible);
+  const neededAssetIds = new Set(
+    visible.filter((e) => e.type === "image").map((e) => e.assetId)
+  );
   const images = await loadAssetImages(
     assets,
-    new Set(visible.map((e) => e.assetId)),
+    neededAssetIds,
     (loaded, total) => onProgress?.("preparing", (loaded / Math.max(1, total)) * 20)
   );
 
@@ -101,20 +158,26 @@ export async function renderSheetToCanvas(
 
   for (let i = 0; i < visible.length; i++) {
     const el = visible[i];
-    const img = images.get(el.assetId);
-    if (!img) continue;
     ctx.save();
     ctx.translate(el.x * dpi, el.y * dpi);
     ctx.rotate((el.rotation * Math.PI) / 180);
     ctx.scale(el.flipX ? -1 : 1, el.flipY ? -1 : 1);
     ctx.globalAlpha = el.opacity;
-    ctx.drawImage(
-      img,
-      (-el.widthIn / 2) * dpi,
-      (-el.heightIn / 2) * dpi,
-      el.widthIn * dpi,
-      el.heightIn * dpi
-    );
+
+    if (el.type === "text") {
+      drawText(ctx, el, dpi);
+    } else {
+      const img = images.get(el.assetId);
+      if (img) {
+        ctx.drawImage(
+          img,
+          (-el.widthIn / 2) * dpi,
+          (-el.heightIn / 2) * dpi,
+          el.widthIn * dpi,
+          el.heightIn * dpi
+        );
+      }
+    }
     ctx.restore();
 
     if (i % 20 === 19) {
@@ -124,6 +187,32 @@ export async function renderSheetToCanvas(
   }
   onProgress?.("rendering", 80);
   return canvas;
+}
+
+/**
+ * Rasterize a text element to standalone PNG bytes (transparent background,
+ * upright, flips baked in) so the PDF exporter can embed it as an image.
+ */
+export async function rasterizeTextElement(
+  el: TextElement,
+  dpi: number
+): Promise<Uint8Array> {
+  const w = Math.max(1, Math.round(el.widthIn * dpi));
+  const h = Math.max(1, Math.round(el.heightIn * dpi));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new ExportError("Could not rasterize text for the PDF.");
+  ctx.translate(w / 2, h / 2);
+  ctx.scale(el.flipX ? -1 : 1, el.flipY ? -1 : 1);
+  // opacity is applied by the PDF drawImage call, not baked into the raster
+  drawText(ctx, el, dpi);
+  const blob = await new Promise<Blob | null>((resolve) =>
+    canvas.toBlob(resolve, "image/png")
+  );
+  if (!blob) throw new ExportError("Could not rasterize text for the PDF.");
+  return new Uint8Array(await blob.arrayBuffer());
 }
 
 /**

@@ -1,7 +1,7 @@
 import { degrees, PDFDocument, rgb, type PDFImage, type PDFPage } from "pdf-lib";
 import { BLEED_IN } from "../presets";
 import type { LibraryAsset } from "../types";
-import { rasterizeAsset } from "./render";
+import { rasterizeAsset, rasterizeTextElement } from "./render";
 import {
   ExportError,
   type ExportContext,
@@ -79,24 +79,16 @@ function drawCropMarks(
   }
 }
 
-/**
- * Print-ready PDF: one page per sheet at exact physical size, original
- * PNG/JPG bytes embedded losslessly where possible, optional bleed box and
- * crop marks. (Color stays RGB; a CMYK pass belongs in a server-side RIP
- * step — the geometry here is already RIP-ready.)
- */
-export async function exportPdf(
+// UPDATED: draw one sheet onto its own PDF page. Extracted so a single
+// document can hold many pages (one per gang sheet).
+async function addSheetPage(
+  doc: PDFDocument,
   ctx: ExportContext,
   options: PdfOptions,
-  onProgress?: ProgressCallback
-): Promise<Blob> {
+  onProgress: ((fraction: number) => void) | undefined
+): Promise<void> {
   const { elements, assets, sheet } = ctx;
   const visible = elements.filter((e) => e.visible);
-  onProgress?.("preparing", 0);
-
-  const doc = await PDFDocument.create();
-  doc.setTitle(`Gang sheet ${sheet.widthIn}x${sheet.heightIn}`);
-  doc.setCreator("Gangsheet Builder by ModFirst");
 
   const bleed = options.includeBleed ? BLEED_IN : 0;
   const markSpace = options.cropMarks ? MARK_GAP_IN + MARK_LEN_IN + 0.0625 : 0;
@@ -119,10 +111,25 @@ export async function exportPdf(
     });
   }
 
-  // embed unique (asset, flip) combinations once
+  // embed unique image (asset, flip) combinations once; rasterize text per element
   const cache = new Map<string, PDFImage>();
+  const textImages = new Map<string, PDFImage>();
   let done = 0;
   for (const el of visible) {
+    if (el.type === "text") {
+      try {
+        textImages.set(
+          el.id,
+          await doc.embedPng(await rasterizeTextElement(el, options.dpi))
+        );
+      } catch (err) {
+        throw err instanceof ExportError
+          ? err
+          : new ExportError(`Could not embed text "${el.text}" into the PDF.`);
+      }
+      done++;
+      continue;
+    }
     const asset = assets.find((a) => a.id === el.assetId);
     if (!asset) continue;
     const key = `${asset.id}|${el.flipX}|${el.flipY}`;
@@ -142,13 +149,15 @@ export async function exportPdf(
       }
     }
     done++;
-    onProgress?.("preparing", (done / visible.length) * 40);
+    onProgress?.((done / Math.max(1, visible.length)) * 0.5);
   }
 
-  onProgress?.("rendering", 40);
   for (let i = 0; i < visible.length; i++) {
     const el = visible[i];
-    const image = cache.get(`${el.assetId}|${el.flipX}|${el.flipY}`);
+    const image =
+      el.type === "text"
+        ? textImages.get(el.id)
+        : cache.get(`${el.assetId}|${el.flipX}|${el.flipY}`);
     if (!image) continue;
 
     const w = el.widthIn * PT_PER_IN;
@@ -172,7 +181,7 @@ export async function exportPdf(
       rotate: degrees(-el.rotation),
       opacity: el.opacity,
     });
-    onProgress?.("rendering", 40 + ((i + 1) / visible.length) * 40);
+    onProgress?.(0.5 + ((i + 1) / Math.max(1, visible.length)) * 0.5);
   }
 
   if (options.cropMarks) {
@@ -183,6 +192,43 @@ export async function exportPdf(
       sheet.widthIn * PT_PER_IN,
       sheet.heightIn * PT_PER_IN
     );
+  }
+}
+
+/**
+ * Print-ready PDF for one or more sheets: one page per sheet at exact physical
+ * size, original PNG/JPG bytes embedded losslessly where possible, optional
+ * bleed box and crop marks. (Color stays RGB; a CMYK pass belongs in a
+ * server-side RIP step — the geometry here is already RIP-ready.)
+ *
+ * UPDATED: accepts an array of sheet contexts so every gang sheet in the
+ * project is exported together as a multi-page document.
+ */
+export async function exportPdf(
+  contexts: ExportContext[],
+  options: PdfOptions,
+  onProgress?: ProgressCallback
+): Promise<Blob> {
+  if (contexts.length === 0) {
+    throw new ExportError("There are no sheets to export.");
+  }
+  onProgress?.("preparing", 0);
+
+  const doc = await PDFDocument.create();
+  doc.setTitle(
+    contexts.length === 1
+      ? `Gang sheet ${contexts[0].sheet.widthIn}x${contexts[0].sheet.heightIn}`
+      : `Gang sheets (${contexts.length} pages)`
+  );
+  doc.setCreator("Gangsheet Builder by ModFirst");
+
+  // Render each sheet to its own page, mapping per-page progress onto the
+  // overall 0→80% rendering span.
+  for (let i = 0; i < contexts.length; i++) {
+    await addSheetPage(doc, contexts[i], options, (fraction) => {
+      const overall = ((i + fraction) / contexts.length) * 80;
+      onProgress?.(fraction < 0.5 ? "preparing" : "rendering", overall);
+    });
   }
 
   onProgress?.("encoding", 85);

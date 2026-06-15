@@ -20,7 +20,8 @@ export function runQualityChecks(
     return issues;
   }
 
-  const missing = visible.filter(
+  const images = visible.filter((e) => e.type === "image");
+  const missing = images.filter(
     (e) => !assets.some((a) => a.id === e.assetId)
   );
   if (missing.length > 0) {
@@ -31,7 +32,7 @@ export function runQualityChecks(
     });
   }
 
-  const lowDpi = visible.filter((e) => {
+  const lowDpi = images.filter((e) => {
     const asset = assets.find((a) => a.id === e.assetId);
     return asset && effectiveDpi(asset.naturalWidth, e.widthIn) < LOW_DPI_THRESHOLD;
   });
@@ -86,7 +87,9 @@ export function estimateFileSize(
     return px * 4 * 0.18;
   }
   const usedAssetIds = new Set(
-    elements.filter((e) => e.visible).map((e) => e.assetId)
+    elements
+      .filter((e) => e.visible && e.type === "image")
+      .map((e) => (e as { assetId: string }).assetId)
   );
   let bytes = 60_000; // structure overhead
   for (const a of assets) {

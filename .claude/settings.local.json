@@ -4,7 +4,15 @@
       "PowerShell(\\(Get-ChildItem -Force -Recurse -ErrorAction SilentlyContinue | Measure-Object\\).Count; Get-Location)",
       "PowerShell(node --version)",
       "PowerShell(npm --version)",
-      "mcp__Claude_Preview__preview_start"
+      "mcp__Claude_Preview__preview_start",
+      "Bash(python -m pip install reportlab pillow)",
+      "Bash(python -c ' *)",
+      "Bash(python build_guide.py)",
+      "Bash(rm -rf app/api/devshot)",
+      "Bash(rm -rf docs/_render)",
+      "Bash(rm -f docs/screenshots/03a_scattered.png docs/screenshots/03b_nested.png docs/screenshots/03b_nested__stage.png)",
+      "Read(//e/e/claude/V2/Pro/app/**)",
+      "Read(//e/e/claude/V2/Pro/**)"
     ]
   }
 }

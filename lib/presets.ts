@@ -1,24 +1,34 @@
 import type { SheetConfig } from "./types";
 
-export interface SheetPreset {
-  label: string;
-  widthIn: number;
-  heightIn: number;
+/** DTF roll width — fixed for every sheet. */
+export const SHEET_WIDTH_IN = 22.5;
+
+/** Discrete sheet heights, 24"→300" in 12" steps. */
+export const SHEET_HEIGHTS: number[] = Array.from(
+  { length: (300 - 24) / 12 + 1 },
+  (_, i) => 24 + i * 12
+);
+
+export const MIN_SHEET_IN = SHEET_HEIGHTS[0]; // 24
+export const MAX_SHEET_IN = SHEET_HEIGHTS[SHEET_HEIGHTS.length - 1]; // 300
+
+/** Smallest discrete height that holds `requiredIn`, capped at the maximum. */
+export function smallestHeightFor(requiredIn: number): number {
+  return (
+    SHEET_HEIGHTS.find((h) => h >= requiredIn - 1e-6) ?? MAX_SHEET_IN
+  );
 }
 
-export const SHEET_PRESETS: SheetPreset[] = [
-  { label: '22" × 35"', widthIn: 22, heightIn: 35 },
-  { label: '22" × 60"', widthIn: 22, heightIn: 60 },
-  { label: '22" × 96"', widthIn: 22, heightIn: 96 },
-  { label: '22" × 120"', widthIn: 22, heightIn: 120 },
-];
-
-export const MIN_SHEET_IN = 4;
-export const MAX_SHEET_IN = 240;
+/** Clamp/round any height to the nearest valid discrete size. */
+export function normalizeHeight(heightIn: number): number {
+  if (heightIn <= MIN_SHEET_IN) return MIN_SHEET_IN;
+  if (heightIn >= MAX_SHEET_IN) return MAX_SHEET_IN;
+  return smallestHeightFor(heightIn);
+}
 
 export const DEFAULT_SHEET: SheetConfig = {
-  widthIn: 22,
-  heightIn: 35,
+  widthIn: SHEET_WIDTH_IN,
+  heightIn: 36,
   dpi: 300,
   background: null,
   showBleed: false,

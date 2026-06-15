@@ -1,5 +1,8 @@
 "use client";
 
+import { useRef } from "react";
+import { usePersistence } from "@/hooks/usePersistence";
+import { clearLocal } from "@/lib/persistence";
 import { useBuilder } from "@/lib/store";
 import type { Unit } from "@/lib/types";
 
@@ -56,6 +59,22 @@ export default function Toolbar() {
   const deleteSelected = useBuilder((s) => s.deleteSelected);
   const setShowShortcuts = useBuilder((s) => s.setShowShortcuts);
   const setShowExportModal = useBuilder((s) => s.setShowExportModal);
+  const resetProject = useBuilder((s) => s.resetProject);
+  const { saveProject, loadProjectFile } = usePersistence();
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  // NEW CHANGE: full builder reset — clears sheets, images, settings, history,
+  // and the saved localStorage project, after explicit confirmation.
+  const handleReset = () => {
+    if (
+      confirm(
+        "Reset the builder? This clears all sheets, uploaded images, and settings. This cannot be undone."
+      )
+    ) {
+      clearLocal();
+      resetProject();
+    }
+  };
 
   return (
     <div className="flex h-12 items-center gap-1 border-b border-surface-3 bg-surface-1 px-3">
@@ -63,6 +82,29 @@ export default function Toolbar() {
         Gangsheet Builder{" "}
         <span className="font-normal text-gray-400">by ModFirst</span>
       </span>
+
+      <Divider />
+
+      <ToolButton title="New project" onClick={handleReset}>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M12 11v6M9 14h6" /></svg>
+      </ToolButton>
+      <ToolButton title="Save project (download)" onClick={saveProject}>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><path d="M17 21v-8H7v8M7 3v5h8" /></svg>
+      </ToolButton>
+      <ToolButton title="Load project" onClick={() => fileRef.current?.click()}>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></svg>
+      </ToolButton>
+      <input
+        ref={fileRef}
+        type="file"
+        accept=".json,application/json"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) void loadProjectFile(f);
+          e.target.value = "";
+        }}
+      />
 
       <Divider />
 
@@ -156,6 +198,17 @@ export default function Toolbar() {
       <ToolButton title="Keyboard shortcuts (?)" onClick={() => setShowShortcuts(true)}>
         <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" /><path d="M12 17h.01" /></svg>
       </ToolButton>
+
+      {/* NEW CHANGE: prominent Reset Builder button */}
+      <button
+        type="button"
+        onClick={handleReset}
+        title="Reset the entire builder"
+        className="ml-1 flex h-8 items-center gap-1.5 rounded border border-red-500/50 px-3 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/15 hover:text-red-200"
+      >
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.7 3" /><path d="M3 3v5h5" /></svg>
+        Reset
+      </button>
 
       <button
         type="button"

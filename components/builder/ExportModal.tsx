@@ -16,8 +16,8 @@ const DPI_CHOICES = [150, 300, 600];
 export default function ExportModal() {
   const show = useBuilder((s) => s.showExportModal);
   const setShow = useBuilder((s) => s.setShowExportModal);
-  const sheet = useBuilder((s) => s.sheet);
-  const elements = useBuilder((s) => s.elements);
+  // UPDATED: export covers every sheet, so the summary aggregates all of them.
+  const sheets = useBuilder((s) => s.sheets);
   const assets = useBuilder((s) => s.assets);
   const jobs = useBuilder((s) => s.exportJobs);
   const { runBatch } = useExport();
@@ -30,28 +30,57 @@ export default function ExportModal() {
   const [cropMarks, setCropMarks] = useState(false);
   const [includeBleed, setIncludeBleed] = useState(false);
 
-  const issues = useMemo(
-    () => (show ? runQualityChecks(elements, assets, sheet) : []),
-    [show, elements, assets, sheet]
-  );
+  const sheetCount = sheets.length;
 
-  const px = outputPixelSize(sheet.widthIn, sheet.heightIn, dpi);
+  // pre-flight checks run across every sheet
+  const issues = useMemo(() => {
+    if (!show) return [];
+    const all = sheets.flatMap((sh) =>
+      runQualityChecks(sh.elements, assets, sh.config)
+    );
+    // de-dupe by code, keeping the most severe
+    const byCode = new Map<string, (typeof all)[number]>();
+    for (const i of all) {
+      const prev = byCode.get(i.code);
+      if (!prev || (prev.severity !== "error" && i.severity === "error")) {
+        byCode.set(i.code, i);
+      }
+    }
+    return [...byCode.values()];
+  }, [show, sheets, assets]);
+
+  // validate the tallest sheet (worst case) against canvas limits
   const sizeError = useMemo(() => {
     if (!formats.png) return null;
     try {
-      validateOutputSize(px.width, px.height);
+      for (const sh of sheets) {
+        const p = outputPixelSize(sh.config.widthIn, sh.config.heightIn, dpi);
+        validateOutputSize(p.width, p.height);
+      }
       return null;
     } catch (e) {
       return e instanceof Error ? e.message : "Output too large.";
     }
-  }, [formats.png, px.width, px.height]);
+  }, [formats.png, sheets, dpi]);
 
-  const utilization = useMemo(() => {
-    const used = elements
-      .filter((e) => e.visible)
-      .reduce((sum, e) => sum + e.widthIn * e.heightIn, 0);
-    return Math.min(1, used / (sheet.widthIn * sheet.heightIn));
-  }, [elements, sheet]);
+  const totalDesigns = useMemo(
+    () =>
+      sheets.reduce(
+        (n, sh) => n + sh.elements.filter((e) => e.visible).length,
+        0
+      ),
+    [sheets]
+  );
+
+  const estBytes = useMemo(() => {
+    let png = 0;
+    let pdf = 0;
+    for (const sh of sheets) {
+      png += estimateFileSize("png", dpi, sh.config, sh.elements, assets);
+      pdf += estimateFileSize("pdf", dpi, sh.config, sh.elements, assets);
+    }
+    return { png, pdf };
+  }, [sheets, dpi, assets]);
 
   if (!show) return null;
 
@@ -82,7 +111,9 @@ export default function ExportModal() {
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-surface-3 px-5 py-3.5">
-          <h2 className="text-base font-semibold text-white">Export gang sheet</h2>
+          <h2 className="text-base font-semibold text-white">
+            Export {sheetCount > 1 ? `all ${sheetCount} sheets` : "gang sheet"}
+          </h2>
           <button
             type="button"
             onClick={() => setShow(false)}
@@ -161,12 +192,13 @@ export default function ExportModal() {
             </div>
           )}
 
-          {/* summary */}
+          {/* summary — aggregated across all sheets */}
           <div className="grid grid-cols-2 gap-x-6 gap-y-1.5 rounded-lg bg-surface-2 p-3 text-xs">
             <div className="flex justify-between">
-              <span className="text-gray-400">Sheet size</span>
+              <span className="text-gray-400">Sheets</span>
               <span className="text-gray-100 tabular-nums">
-                {sheet.widthIn}″ × {sheet.heightIn}″
+                {sheetCount}
+                {formats.pdf ? " (PDF pages)" : ""}
               </span>
             </div>
             <div className="flex justify-between">
@@ -174,31 +206,27 @@ export default function ExportModal() {
               <span className="text-gray-100 tabular-nums">{dpi}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">Output pixels</span>
+              <span className="text-gray-400">Width</span>
               <span className="text-gray-100 tabular-nums">
-                {px.width.toLocaleString()} × {px.height.toLocaleString()}
+                {sheets[0]?.config.widthIn}″
               </span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">Utilization</span>
-              <span className="text-gray-100 tabular-nums">
-                {(utilization * 100).toFixed(1)}%
-              </span>
+              <span className="text-gray-400">Total designs</span>
+              <span className="text-gray-100 tabular-nums">{totalDesigns}</span>
             </div>
             <div className="flex justify-between">
-              <span className="text-gray-400">Designs</span>
+              <span className="text-gray-400">PNG output</span>
               <span className="text-gray-100 tabular-nums">
-                {elements.filter((e) => e.visible).length}
+                {sheetCount > 1 ? `${sheetCount} files` : "1 file"}
               </span>
             </div>
             <div className="flex justify-between">
               <span className="text-gray-400">Est. file size</span>
               <span className="text-gray-100 tabular-nums">
                 {[
-                  formats.png &&
-                    `PNG ~${formatBytes(estimateFileSize("png", dpi, sheet, elements, assets))}`,
-                  formats.pdf &&
-                    `PDF ~${formatBytes(estimateFileSize("pdf", dpi, sheet, elements, assets))}`,
+                  formats.png && `PNG ~${formatBytes(estBytes.png)}`,
+                  formats.pdf && `PDF ~${formatBytes(estBytes.pdf)}`,
                 ]
                   .filter(Boolean)
                   .join(" · ") || "—"}

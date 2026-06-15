@@ -3,6 +3,7 @@
 import { useImageTools } from "@/hooks/useImageTools";
 import { usePlacement } from "@/hooks/usePlacement";
 import { useBuilder } from "@/lib/store";
+import TextProperties from "./TextProperties";
 import type { AlignType, CanvasElement } from "@/lib/types";
 import {
   effectiveDpi,
@@ -68,6 +69,7 @@ export default function PropertiesPanel() {
   const deleteSelected = useBuilder((s) => s.deleteSelected);
   const { autoFill, busy: fillBusy } = usePlacement();
   const { processAsset, processing } = useImageTools();
+  const setCroppingAsset = useBuilder((s) => s.setCroppingAsset);
 
   const selected = elements.filter((e) => selectedIds.includes(e.id));
   if (selected.length === 0) return null;
@@ -80,7 +82,10 @@ export default function PropertiesPanel() {
   const patchSelected = (patch: Partial<CanvasElement>) =>
     updateElements(selected.map((e) => ({ id: e.id, patch })));
 
-  const asset = single ? assets.find((a) => a.id === single.assetId) : null;
+  const asset =
+    single && single.type === "image"
+      ? assets.find((a) => a.id === single.assetId)
+      : null;
   const elDpi =
     single && asset ? effectiveDpi(asset.naturalWidth, single.widthIn) : null;
   const lowDpi = elDpi !== null && elDpi < LOW_DPI_THRESHOLD;
@@ -97,6 +102,8 @@ export default function PropertiesPanel() {
           </span>
         )}
       </div>
+
+      {single && single.type === "text" && <TextProperties element={single} />}
 
       {single && (
         <div className="space-y-2 px-3 pb-3">
@@ -115,36 +122,40 @@ export default function PropertiesPanel() {
               disabled={single.locked}
               onCommit={(v) => patchSelected({ y: fromUnit(v) })}
             />
-            <NumField
-              label="W"
-              value={toUnit(single.widthIn)}
-              min={toUnit(0.1)}
-              suffix={suffix}
-              disabled={single.locked}
-              onCommit={(v) => {
-                const w = fromUnit(v);
-                const patch: Partial<CanvasElement> = { widthIn: w };
-                if (aspectLock) {
-                  patch.heightIn = (w / single.widthIn) * single.heightIn;
-                }
-                patchSelected(patch);
-              }}
-            />
-            <NumField
-              label="H"
-              value={toUnit(single.heightIn)}
-              min={toUnit(0.1)}
-              suffix={suffix}
-              disabled={single.locked}
-              onCommit={(v) => {
-                const h = fromUnit(v);
-                const patch: Partial<CanvasElement> = { heightIn: h };
-                if (aspectLock) {
-                  patch.widthIn = (h / single.heightIn) * single.widthIn;
-                }
-                patchSelected(patch);
-              }}
-            />
+            {single.type === "image" && (
+              <>
+                <NumField
+                  label="W"
+                  value={toUnit(single.widthIn)}
+                  min={toUnit(0.1)}
+                  suffix={suffix}
+                  disabled={single.locked}
+                  onCommit={(v) => {
+                    const w = fromUnit(v);
+                    const patch: Partial<CanvasElement> = { widthIn: w };
+                    if (aspectLock) {
+                      patch.heightIn = (w / single.widthIn) * single.heightIn;
+                    }
+                    patchSelected(patch);
+                  }}
+                />
+                <NumField
+                  label="H"
+                  value={toUnit(single.heightIn)}
+                  min={toUnit(0.1)}
+                  suffix={suffix}
+                  disabled={single.locked}
+                  onCommit={(v) => {
+                    const h = fromUnit(v);
+                    const patch: Partial<CanvasElement> = { heightIn: h };
+                    if (aspectLock) {
+                      patch.widthIn = (h / single.heightIn) * single.widthIn;
+                    }
+                    patchSelected(patch);
+                  }}
+                />
+              </>
+            )}
           </div>
 
           {elDpi !== null && (
@@ -257,42 +268,54 @@ export default function PropertiesPanel() {
         </div>
 
         {single && asset && (
-          <div className="flex gap-1.5">
+          <div className="space-y-1.5">
             <button
               type="button"
               disabled={fillBusy}
               onClick={() => void autoFill(single.id)}
               title="Fill the remaining sheet area with copies of this design"
-              className="flex-1 rounded border border-accent/60 px-2 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent/10 disabled:opacity-40"
+              className="w-full rounded border border-accent/60 px-2 py-1.5 text-xs font-medium text-accent transition-colors hover:bg-accent/10 disabled:opacity-40"
             >
               {fillBusy ? "Filling…" : "Auto Fill sheet"}
             </button>
-            <button
-              type="button"
-              disabled={!!processing[asset.id] || asset.bgRemoved}
-              onClick={() => void processAsset(asset.id, "remove-bg")}
-              title={asset.bgRemoved ? "Background already removed" : "Remove background"}
-              className="flex-1 rounded border border-surface-3 px-2 py-1.5 text-xs text-gray-300 hover:border-gray-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {processing[asset.id] === "remove-bg"
-                ? "Removing…"
-                : asset.bgRemoved
-                  ? "BG removed ✓"
-                  : "Remove BG"}
-            </button>
-            <button
-              type="button"
-              disabled={!!processing[asset.id] || asset.upscaled}
-              onClick={() => void processAsset(asset.id, "upscale")}
-              title={asset.upscaled ? "Already upscaled" : "Upscale source image (print size unchanged)"}
-              className="flex-1 rounded border border-surface-3 px-2 py-1.5 text-xs text-gray-300 hover:border-gray-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {processing[asset.id] === "upscale"
-                ? "Upscaling…"
-                : asset.upscaled
-                  ? "Upscaled ✓"
-                  : "Upscale"}
-            </button>
+            <div className="flex gap-1.5">
+              <button
+                type="button"
+                disabled={!!processing[asset.id] || asset.bgRemoved}
+                onClick={() => void processAsset(asset.id, "remove-bg")}
+                title={asset.bgRemoved ? "Background already removed" : "Remove background"}
+                className="flex-1 rounded border border-surface-3 px-1 py-1.5 text-xs text-gray-300 hover:border-gray-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {processing[asset.id] === "remove-bg"
+                  ? "…"
+                  : asset.bgRemoved
+                    ? "BG ✓"
+                    : "Remove BG"}
+              </button>
+              <button
+                type="button"
+                disabled={!!processing[asset.id] || asset.upscaled}
+                onClick={() => void processAsset(asset.id, "upscale")}
+                title={asset.upscaled ? "Already upscaled" : "Upscale source image (print size unchanged)"}
+                className="flex-1 rounded border border-surface-3 px-1 py-1.5 text-xs text-gray-300 hover:border-gray-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {processing[asset.id] === "upscale"
+                  ? "…"
+                  : asset.upscaled
+                    ? "HD ✓"
+                    : "Upscale"}
+              </button>
+              {/* UPDATED: Crop opens the custom canvas cropper (client-side) */}
+              <button
+                type="button"
+                disabled={!!processing[asset.id]}
+                onClick={() => setCroppingAsset(asset.id)}
+                title="Crop image"
+                className="flex-1 rounded border border-surface-3 px-1 py-1.5 text-xs text-gray-300 hover:border-gray-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {asset.cropped ? "Crop ✓" : "Crop"}
+              </button>
+            </div>
           </div>
         )}
 

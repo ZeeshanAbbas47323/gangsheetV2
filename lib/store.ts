@@ -1,14 +1,21 @@
 import { create } from "zustand";
 import { uid } from "./id";
 import type { NestPlacement, NestStats } from "./nesting/types";
-import { DEFAULT_SHEET, MAX_SHEET_IN, MIN_SHEET_IN } from "./presets";
+import {
+  DEFAULT_SHEET,
+  normalizeHeight,
+  SHEET_WIDTH_IN,
+} from "./presets";
+import { DEFAULT_FONT, measureText } from "./text";
 import type {
   AlignType,
   CanvasElement,
   ExportJob,
   ImageToolOp,
   LibraryAsset,
+  Sheet,
   SheetConfig,
+  TextElement,
   Toast,
   Unit,
   UploadProgress,
@@ -18,26 +25,44 @@ import { elementAABB } from "./units";
 const HISTORY_LIMIT = 100;
 const DUPLICATE_OFFSET_IN = 0.25;
 
+/** SheetConfig fields shared across every sheet (vs. per-sheet height). */
+const GLOBAL_CONFIG_KEYS: (keyof SheetConfig)[] = [
+  "dpi",
+  "background",
+  "showBleed",
+  "showSafeZone",
+  "snapToGrid",
+  "snapToEdges",
+  "gridSizeIn",
+];
+
 interface Snapshot {
+  sheets: Sheet[];
+  activeSheetId: string;
+}
+
+/** One sheet's height + the elements packed onto it (for multi-sheet build). */
+export interface SheetBuild {
+  heightIn: number;
   elements: CanvasElement[];
-  sheet: SheetConfig;
+  name?: string;
 }
 
 export interface BuilderState {
+  sheets: Sheet[];
+  activeSheetId: string;
+  /** Read-only mirror of the active sheet's config (kept in sync). */
   sheet: SheetConfig;
+  /** Read-only mirror of the active sheet's elements (kept in sync). */
   elements: CanvasElement[];
+
   assets: LibraryAsset[];
   selectedIds: string[];
   unit: Unit;
-  /** Zoom factor relative to "fit sheet to viewport". */
   zoom: number;
-  /** Absolute render scale in screen pixels per inch (set by the canvas). */
   viewScale: number;
-  /** Stage offset in screen pixels. */
   pan: { x: number; y: number };
-  /** Bumped to ask the canvas to re-fit the sheet into view. */
   fitRequest: number;
-  /** Zoom factor requests from UI controls, applied by the canvas (anchored at center). */
   pendingZoom: { factor: number; seq: number } | null;
   aspectLock: boolean;
   showShortcuts: boolean;
@@ -47,10 +72,10 @@ export interface BuilderState {
   quantity: number;
   nestStats: NestStats | null;
   exportJobs: ExportJob[];
-  /** Asset ids waiting in the pre-placement (size & quantity) modal. */
   pendingPlacement: string[];
-  /** Per-asset in-flight image tool (remove-bg / upscale). */
   assetProcessing: Record<string, ImageToolOp | undefined>;
+  /** Asset currently open in the custom crop tool (null = closed). */
+  croppingAssetId: string | null;
 
   past: Snapshot[];
   future: Snapshot[];
@@ -66,7 +91,6 @@ export interface BuilderState {
   setShowShortcuts: (show: boolean) => void;
   setShowExportModal: (show: boolean) => void;
   setNestStats: (stats: NestStats | null) => void;
-  /** Commit nest placements (one undo step). Overflow stacks beside the sheet. */
   applyNestResult: (
     placements: NestPlacement[],
     overflowIds: string[],
@@ -93,28 +117,25 @@ export interface BuilderState {
   renameAsset: (id: string, name: string) => void;
   updateAsset: (id: string, patch: Partial<LibraryAsset>) => void;
   setAssetProcessing: (id: string, op: ImageToolOp | undefined) => void;
+  setCroppingAsset: (id: string | null) => void;
 
   // placement queue
   queuePlacement: (assetIds: string[]) => void;
   dequeuePlacement: (assetId: string) => void;
   clearPlacementQueue: () => void;
 
-  // elements (all history-committing unless noted)
+  // elements (history-committing unless noted)
   addElementFromAsset: (
     assetId: string,
     center?: { x: number; y: number }
   ) => string | null;
-  /** Insert pre-positioned elements as one undo step and select them. */
   addElements: (elements: CanvasElement[]) => void;
-  /** Atomic auto-build commit: new sheet height + new elements, one undo step. */
-  applyAutoBuild: (elements: CanvasElement[], sheetHeightIn: number) => void;
+  addTextElement: (patch?: Partial<TextElement>) => string;
   deleteSelected: () => void;
   duplicateSelected: () => void;
-  /** Transient update — does NOT push history. Pair with begin/endTransient. */
   updateElementsTransient: (
     updates: { id: string; patch: Partial<CanvasElement> }[]
   ) => void;
-  /** History-committing single-shot update. */
   updateElements: (
     updates: { id: string; patch: Partial<CanvasElement> }[]
   ) => void;
@@ -126,37 +147,103 @@ export interface BuilderState {
   distributeSelected: (axis: "horizontal" | "vertical") => void;
   nudgeSelected: (dxIn: number, dyIn: number) => void;
 
-  // sheet
+  // sheet config
   setSheet: (patch: Partial<SheetConfig>) => void;
-  swapOrientation: () => void;
+
+  // multi-sheet management
+  addSheet: () => void;
+  deleteSheet: (id: string) => void;
+  renameSheet: (id: string, name: string) => void;
+  duplicateSheet: (id: string) => void;
+  setActiveSheet: (id: string) => void;
+  nextSheet: () => void;
+  prevSheet: () => void;
+  /** Commit a multi-sheet build (one undo step): active sheet content/height + extra sheets. */
+  commitBuild: (
+    activeElements: CanvasElement[],
+    activeHeightIn: number,
+    extraSheets: SheetBuild[]
+  ) => void;
+
+  // persistence
+  loadProject: (sheets: Sheet[], assets: LibraryAsset[]) => void;
+  resetProject: () => void;
 
   // history
   undo: () => void;
   redo: () => void;
 }
 
-function takeSnapshot(s: Pick<BuilderState, "elements" | "sheet">): Snapshot {
-  return { elements: s.elements, sheet: s.sheet };
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+function makeSheet(
+  name: string,
+  config: SheetConfig,
+  elements: CanvasElement[] = []
+): Sheet {
+  return {
+    id: uid(),
+    name,
+    config: { ...config, widthIn: SHEET_WIDTH_IN },
+    elements,
+  };
+}
+
+function takeSnapshot(s: Pick<BuilderState, "sheets" | "activeSheetId">): Snapshot {
+  return { sheets: s.sheets, activeSheetId: s.activeSheetId };
 }
 
 function pushPast(past: Snapshot[], snap: Snapshot): Snapshot[] {
   const next = [...past, snap];
-  return next.length > HISTORY_LIMIT ? next.slice(next.length - HISTORY_LIMIT) : next;
+  return next.length > HISTORY_LIMIT
+    ? next.slice(next.length - HISTORY_LIMIT)
+    : next;
+}
+
+/** Derive the active-sheet mirrors from a sheets array. */
+function mirror(sheets: Sheet[], activeSheetId: string) {
+  const active = sheets.find((sh) => sh.id === activeSheetId) ?? sheets[0];
+  return { sheet: active.config, elements: active.elements };
+}
+
+/** Clone an element with a fresh id (used by duplicate/clone). */
+function cloneElement(el: CanvasElement): CanvasElement {
+  return { ...el, id: uid() };
 }
 
 let pendingSnapshot: Snapshot | null = null;
 
+function initialState() {
+  const first = makeSheet("Sheet 1", DEFAULT_SHEET);
+  return {
+    sheets: [first],
+    activeSheetId: first.id,
+    sheet: first.config,
+    elements: first.elements,
+  };
+}
+
 export const useBuilder = create<BuilderState>((set, get) => {
-  /** Push current document state to the undo stack and clear redo. */
   const commit = () =>
     set((s) => ({ past: pushPast(s.past, takeSnapshot(s)), future: [] }));
 
-  const clampSheetDim = (v: number) =>
-    Math.min(MAX_SHEET_IN, Math.max(MIN_SHEET_IN, v));
+  /** Replace the active sheet's elements (+ optional extra state) and resync mirror. */
+  const setActiveElements = (
+    elements: CanvasElement[],
+    extra: Partial<BuilderState> = {}
+  ) =>
+    set((s) => {
+      const sheets = s.sheets.map((sh) =>
+        sh.id === s.activeSheetId ? { ...sh, elements } : sh
+      );
+      return { sheets, elements, ...extra };
+    });
+
+  const init = initialState();
 
   return {
-    sheet: DEFAULT_SHEET,
-    elements: [],
+    ...init,
     assets: [],
     selectedIds: [],
     unit: "in",
@@ -175,6 +262,7 @@ export const useBuilder = create<BuilderState>((set, get) => {
     exportJobs: [],
     pendingPlacement: [],
     assetProcessing: {},
+    croppingAssetId: null,
     past: [],
     future: [],
 
@@ -193,14 +281,13 @@ export const useBuilder = create<BuilderState>((set, get) => {
     setNestStats: (nestStats) => set({ nestStats }),
 
     applyNestResult: (placements, overflowIds, scale) => {
-      const { sheet } = get();
+      const { sheet, elements } = get();
       commit();
       const byId = new Map(placements.map((p) => [p.id, p]));
-      // stack overflow items in a column beside the sheet so they stay visible
       let overflowY = 0.5;
       const overflowPos = new Map<string, { x: number; y: number }>();
       for (const id of overflowIds) {
-        const el = get().elements.find((e) => e.id === id);
+        const el = elements.find((e) => e.id === id);
         if (!el) continue;
         const box = elementAABB(el);
         overflowPos.set(id, {
@@ -209,8 +296,8 @@ export const useBuilder = create<BuilderState>((set, get) => {
         });
         overflowY += box.height + 0.5;
       }
-      set((s) => ({
-        elements: s.elements.map((e) => {
+      setActiveElements(
+        elements.map((e) => {
           const p = byId.get(e.id);
           if (p) {
             return {
@@ -224,8 +311,8 @@ export const useBuilder = create<BuilderState>((set, get) => {
           }
           const o = overflowPos.get(e.id);
           return o ? { ...e, x: o.x, y: o.y } : e;
-        }),
-      }));
+        })
+      );
     },
 
     upsertExportJob: (job) =>
@@ -266,15 +353,25 @@ export const useBuilder = create<BuilderState>((set, get) => {
 
     addAssets: (assets) => set((s) => ({ assets: [...s.assets, ...assets] })),
     removeAsset: (id) => {
-      const usedBy = get().elements.filter((e) => e.assetId === id);
-      if (usedBy.length > 0) commit();
-      set((s) => ({
-        assets: s.assets.filter((a) => a.id !== id),
-        elements: s.elements.filter((e) => e.assetId !== id),
-        selectedIds: s.selectedIds.filter(
-          (sid) => !usedBy.some((e) => e.id === sid)
-        ),
-      }));
+      const { sheets } = get();
+      const usedAnywhere = sheets.some((sh) =>
+        sh.elements.some((e) => e.type === "image" && e.assetId === id)
+      );
+      if (usedAnywhere) commit();
+      set((s) => {
+        const nextSheets = s.sheets.map((sh) => ({
+          ...sh,
+          elements: sh.elements.filter(
+            (e) => !(e.type === "image" && e.assetId === id)
+          ),
+        }));
+        return {
+          assets: s.assets.filter((a) => a.id !== id),
+          sheets: nextSheets,
+          ...mirror(nextSheets, s.activeSheetId),
+          selectedIds: [],
+        };
+      });
     },
     renameAsset: (id, name) =>
       set((s) => ({
@@ -288,6 +385,7 @@ export const useBuilder = create<BuilderState>((set, get) => {
       set((s) => ({
         assetProcessing: { ...s.assetProcessing, [id]: op },
       })),
+    setCroppingAsset: (croppingAssetId) => set({ croppingAssetId }),
 
     queuePlacement: (assetIds) =>
       set((s) => ({
@@ -307,7 +405,6 @@ export const useBuilder = create<BuilderState>((set, get) => {
       const asset = assets.find((a) => a.id === assetId);
       if (!asset) return null;
 
-      // Natural physical size at the source DPI, capped so it fits the sheet.
       const srcDpi = asset.dpi ?? 300;
       let w = asset.naturalWidth / srcDpi;
       let h = asset.naturalHeight / srcDpi;
@@ -334,26 +431,55 @@ export const useBuilder = create<BuilderState>((set, get) => {
         visible: true,
       };
       commit();
-      set({ elements: [...elements, el], selectedIds: [el.id] });
+      setActiveElements([...elements, el], { selectedIds: [el.id] });
       return el.id;
     },
 
     addElements: (els) => {
       if (els.length === 0) return;
       commit();
-      set((s) => ({
-        elements: [...s.elements, ...els],
+      setActiveElements([...get().elements, ...els], {
         selectedIds: els.map((e) => e.id),
-      }));
+      });
     },
 
-    applyAutoBuild: (els, sheetHeightIn) => {
+    addTextElement: (patch) => {
+      const { sheet, elements } = get();
+      const base: TextElement = {
+        id: uid(),
+        type: "text",
+        name: "Text",
+        text: "Your text",
+        fontFamily: DEFAULT_FONT,
+        fontSize: 72, // points → 1"
+        fontWeight: 700,
+        italic: false,
+        underline: false,
+        align: "center",
+        color: "#111111",
+        outlineColor: "#ffffff",
+        outlineWidth: 0,
+        letterSpacing: 0,
+        lineHeight: 1.15,
+        x: sheet.widthIn / 2,
+        y: sheet.heightIn / 2,
+        widthIn: 1,
+        heightIn: 1,
+        rotation: 0,
+        flipX: false,
+        flipY: false,
+        opacity: 1,
+        locked: false,
+        visible: true,
+        ...patch,
+      };
+      base.name = base.text.slice(0, 24) || "Text";
+      const m = measureText(base);
+      base.widthIn = m.widthIn;
+      base.heightIn = m.heightIn;
       commit();
-      set((s) => ({
-        sheet: { ...s.sheet, heightIn: clampSheetDim(sheetHeightIn) },
-        elements: [...s.elements, ...els],
-        selectedIds: els.map((e) => e.id),
-      }));
+      setActiveElements([...elements, base], { selectedIds: [base.id] });
+      return base.id;
     },
 
     deleteSelected: () => {
@@ -363,10 +489,10 @@ export const useBuilder = create<BuilderState>((set, get) => {
       );
       if (deletable.length === 0) return;
       commit();
-      set((s) => ({
-        elements: s.elements.filter((e) => !deletable.includes(e.id)),
-        selectedIds: [],
-      }));
+      setActiveElements(
+        elements.filter((e) => !deletable.includes(e.id)),
+        { selectedIds: [] }
+      );
     },
 
     duplicateSelected: () => {
@@ -375,25 +501,23 @@ export const useBuilder = create<BuilderState>((set, get) => {
       if (sources.length === 0) return;
       commit();
       const clones = sources.map((e) => ({
-        ...e,
-        id: uid(),
+        ...cloneElement(e),
         x: e.x + DUPLICATE_OFFSET_IN,
         y: e.y + DUPLICATE_OFFSET_IN,
         locked: false,
       }));
-      set((s) => ({
-        elements: [...s.elements, ...clones],
+      setActiveElements([...elements, ...clones], {
         selectedIds: clones.map((c) => c.id),
-      }));
+      });
     },
 
     updateElementsTransient: (updates) =>
-      set((s) => ({
-        elements: s.elements.map((e) => {
+      setActiveElements(
+        get().elements.map((e) => {
           const u = updates.find((x) => x.id === e.id);
-          return u ? { ...e, ...u.patch } : e;
-        }),
-      })),
+          return u ? ({ ...e, ...u.patch } as CanvasElement) : e;
+        })
+      ),
 
     updateElements: (updates) => {
       commit();
@@ -413,7 +537,11 @@ export const useBuilder = create<BuilderState>((set, get) => {
       if (!pendingSnapshot) return;
       const snap = pendingSnapshot;
       pendingSnapshot = null;
-      set({ elements: snap.elements, sheet: snap.sheet });
+      set({
+        sheets: snap.sheets,
+        activeSheetId: snap.activeSheetId,
+        ...mirror(snap.sheets, snap.activeSheetId),
+      });
     },
 
     reorderSelected: (dir) => {
@@ -438,7 +566,7 @@ export const useBuilder = create<BuilderState>((set, get) => {
         }
       }
       commit();
-      set({ elements: next });
+      setActiveElements(next);
     },
 
     alignSelected: (type) => {
@@ -448,7 +576,6 @@ export const useBuilder = create<BuilderState>((set, get) => {
       );
       if (selected.length === 0) return;
 
-      // Single element aligns to the sheet; multiple align within their bounds.
       let bounds = { left: 0, top: 0, right: sheet.widthIn, bottom: sheet.heightIn };
       if (selected.length > 1) {
         const boxes = selected.map(elementAABB);
@@ -461,8 +588,8 @@ export const useBuilder = create<BuilderState>((set, get) => {
       }
 
       commit();
-      set((s) => ({
-        elements: s.elements.map((e) => {
+      setActiveElements(
+        elements.map((e) => {
           if (!selected.some((sel) => sel.id === e.id)) return e;
           const box = elementAABB(e);
           switch (type) {
@@ -479,8 +606,8 @@ export const useBuilder = create<BuilderState>((set, get) => {
             case "centerY":
               return { ...e, y: e.y + ((bounds.top + bounds.bottom) / 2 - box.cy) };
           }
-        }),
-      }));
+        })
+      );
     },
 
     distributeSelected: (axis) => {
@@ -501,15 +628,15 @@ export const useBuilder = create<BuilderState>((set, get) => {
       const step = (last - first) / (sorted.length - 1);
 
       commit();
-      set((s) => ({
-        elements: s.elements.map((e) => {
+      setActiveElements(
+        elements.map((e) => {
           const i = sorted.findIndex((x) => x.id === e.id);
           if (i === -1) return e;
           return axis === "horizontal"
             ? { ...e, x: first + step * i }
             : { ...e, y: first + step * i };
-        }),
-      }));
+        })
+      );
     },
 
     nudgeSelected: (dxIn, dyIn) => {
@@ -519,30 +646,193 @@ export const useBuilder = create<BuilderState>((set, get) => {
       );
       if (movable.length === 0) return;
       commit();
-      set((s) => ({
-        elements: s.elements.map((e) =>
+      setActiveElements(
+        elements.map((e) =>
           movable.some((m) => m.id === e.id)
             ? { ...e, x: e.x + dxIn, y: e.y + dyIn }
             : e
-        ),
-      }));
+        )
+      );
     },
 
     setSheet: (patch) => {
-      const next = { ...get().sheet, ...patch };
-      if (patch.widthIn !== undefined) next.widthIn = clampSheetDim(patch.widthIn);
-      if (patch.heightIn !== undefined)
-        next.heightIn = clampSheetDim(patch.heightIn);
       commit();
-      set({ sheet: next });
+      set((s) => {
+        const globalPatch: Partial<SheetConfig> = {};
+        for (const k of GLOBAL_CONFIG_KEYS) {
+          if (patch[k] !== undefined) (globalPatch as Record<string, unknown>)[k] = patch[k];
+        }
+        const newHeight =
+          patch.heightIn !== undefined ? normalizeHeight(patch.heightIn) : undefined;
+        const sheets = s.sheets.map((sh) => {
+          const config: SheetConfig = {
+            ...sh.config,
+            ...globalPatch,
+            widthIn: SHEET_WIDTH_IN,
+          };
+          if (sh.id === s.activeSheetId && newHeight !== undefined) {
+            config.heightIn = newHeight;
+          }
+          return { ...sh, config };
+        });
+        return { sheets, ...mirror(sheets, s.activeSheetId) };
+      });
     },
 
-    swapOrientation: () => {
-      const { sheet } = get();
+    // ---- multi-sheet management -----------------------------------------
+    addSheet: () => {
       commit();
-      set({
-        sheet: { ...sheet, widthIn: sheet.heightIn, heightIn: sheet.widthIn },
+      set((s) => {
+        const sheet = makeSheet(`Sheet ${s.sheets.length + 1}`, get().sheet, []);
+        const sheets = [...s.sheets, sheet];
+        return {
+          sheets,
+          activeSheetId: sheet.id,
+          selectedIds: [],
+          ...mirror(sheets, sheet.id),
+        };
       });
+      get().requestFit();
+    },
+
+    deleteSheet: (id) => {
+      if (get().sheets.length <= 1) {
+        // never leave the project with zero sheets — reset the single sheet
+        get().resetProject();
+        return;
+      }
+      commit();
+      set((s) => {
+        const idx = s.sheets.findIndex((sh) => sh.id === id);
+        const sheets = s.sheets.filter((sh) => sh.id !== id);
+        const activeSheetId =
+          s.activeSheetId === id
+            ? sheets[Math.max(0, idx - 1)].id
+            : s.activeSheetId;
+        return {
+          sheets,
+          activeSheetId,
+          selectedIds: [],
+          ...mirror(sheets, activeSheetId),
+        };
+      });
+      get().requestFit();
+    },
+
+    renameSheet: (id, name) =>
+      set((s) => ({
+        sheets: s.sheets.map((sh) =>
+          sh.id === id ? { ...sh, name: name.trim() || sh.name } : sh
+        ),
+      })),
+
+    duplicateSheet: (id) => {
+      commit();
+      set((s) => {
+        const src = s.sheets.find((sh) => sh.id === id);
+        if (!src) return {};
+        const copy = makeSheet(
+          `${src.name} copy`,
+          src.config,
+          src.elements.map(cloneElement)
+        );
+        const idx = s.sheets.findIndex((sh) => sh.id === id);
+        const sheets = [
+          ...s.sheets.slice(0, idx + 1),
+          copy,
+          ...s.sheets.slice(idx + 1),
+        ];
+        return {
+          sheets,
+          activeSheetId: copy.id,
+          selectedIds: [],
+          ...mirror(sheets, copy.id),
+        };
+      });
+      get().requestFit();
+    },
+
+    setActiveSheet: (id) => {
+      if (get().activeSheetId === id) return;
+      set((s) => ({
+        activeSheetId: id,
+        selectedIds: [],
+        ...mirror(s.sheets, id),
+      }));
+      get().requestFit();
+    },
+
+    nextSheet: () => {
+      const { sheets, activeSheetId } = get();
+      const i = sheets.findIndex((sh) => sh.id === activeSheetId);
+      if (i < sheets.length - 1) get().setActiveSheet(sheets[i + 1].id);
+    },
+    prevSheet: () => {
+      const { sheets, activeSheetId } = get();
+      const i = sheets.findIndex((sh) => sh.id === activeSheetId);
+      if (i > 0) get().setActiveSheet(sheets[i - 1].id);
+    },
+
+    commitBuild: (activeElements, activeHeightIn, extraSheets) => {
+      commit();
+      set((s) => {
+        const baseConfig = { ...get().sheet };
+        const sheets = s.sheets.map((sh) =>
+          sh.id === s.activeSheetId
+            ? {
+                ...sh,
+                elements: activeElements,
+                config: {
+                  ...sh.config,
+                  widthIn: SHEET_WIDTH_IN,
+                  heightIn: normalizeHeight(activeHeightIn),
+                },
+              }
+            : sh
+        );
+        const created = extraSheets.map((es, i) =>
+          makeSheet(
+            es.name ?? `Sheet ${s.sheets.length + i + 1}`,
+            { ...baseConfig, heightIn: normalizeHeight(es.heightIn) },
+            es.elements
+          )
+        );
+        const all = [...sheets, ...created];
+        return {
+          sheets: all,
+          selectedIds: [],
+          ...mirror(all, s.activeSheetId),
+        };
+      });
+      get().requestFit();
+    },
+
+    // ---- persistence -----------------------------------------------------
+    loadProject: (sheets, assets) => {
+      const safe = sheets.length > 0 ? sheets : [makeSheet("Sheet 1", DEFAULT_SHEET)];
+      set({
+        sheets: safe,
+        activeSheetId: safe[0].id,
+        assets,
+        selectedIds: [],
+        past: [],
+        future: [],
+        ...mirror(safe, safe[0].id),
+      });
+      get().requestFit();
+    },
+
+    resetProject: () => {
+      const fresh = initialState();
+      set({
+        ...fresh,
+        assets: [],
+        selectedIds: [],
+        past: [],
+        future: [],
+        nestStats: null,
+      });
+      get().requestFit();
     },
 
     undo: () => {
@@ -552,11 +842,10 @@ export const useBuilder = create<BuilderState>((set, get) => {
       set((s) => ({
         past: past.slice(0, -1),
         future: [...future, takeSnapshot(s)],
-        elements: snap.elements,
-        sheet: snap.sheet,
-        selectedIds: s.selectedIds.filter((id) =>
-          snap.elements.some((e) => e.id === id)
-        ),
+        sheets: snap.sheets,
+        activeSheetId: snap.activeSheetId,
+        selectedIds: [],
+        ...mirror(snap.sheets, snap.activeSheetId),
       }));
     },
 
@@ -567,11 +856,10 @@ export const useBuilder = create<BuilderState>((set, get) => {
       set((s) => ({
         future: future.slice(0, -1),
         past: pushPast(past, takeSnapshot(s)),
-        elements: snap.elements,
-        sheet: snap.sheet,
-        selectedIds: s.selectedIds.filter((id) =>
-          snap.elements.some((e) => e.id === id)
-        ),
+        sheets: snap.sheets,
+        activeSheetId: snap.activeSheetId,
+        selectedIds: [],
+        ...mirror(snap.sheets, snap.activeSheetId),
       }));
     },
   };

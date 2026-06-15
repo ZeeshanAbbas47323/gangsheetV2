@@ -6,6 +6,7 @@ import { DEFAULT_ASSET_DPI } from "@/lib/files";
 import { useBuilder } from "@/lib/store";
 import type { PlacementSpec } from "@/lib/types";
 import { effectiveDpi, LOW_DPI_THRESHOLD } from "@/lib/units";
+import ImageEditModal from "./ImageEditModal";
 import NumField from "./NumField";
 
 interface RowSpec {
@@ -24,6 +25,8 @@ export default function PlacementModal() {
   const { placeAssets, autoBuild, busy } = usePlacement();
 
   const [specs, setSpecs] = useState<Record<string, RowSpec>>({});
+  // NEW CHANGE: which asset (if any) is open in the Edit Image modal
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   // each batch starts from fresh defaults
   useEffect(() => {
@@ -141,6 +144,15 @@ export default function PlacementModal() {
                       ⚠ {Math.round(dpiAtSize)} DPI at this size
                     </p>
                   )}
+                  {/* NEW CHANGE: open the Edit Image (Remove BG / Upscale / Crop) modal */}
+                  <button
+                    type="button"
+                    onClick={() => setEditingId(asset.id)}
+                    className="mt-1 inline-flex items-center gap-1 rounded border border-surface-3 px-1.5 py-0.5 text-[10px] text-gray-300 hover:border-accent hover:text-white"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>
+                    Edit Image
+                  </button>
                 </div>
 
                 <div className="flex items-center gap-1.5">
@@ -258,6 +270,11 @@ export default function PlacementModal() {
           </div>
         </div>
       </div>
+
+      {/* NEW CHANGE: Edit Image modal (Remove BG / Upscale / Crop) */}
+      {editingId && (
+        <ImageEditModal assetId={editingId} onClose={() => setEditingId(null)} />
+      )}
     </div>
   );
 }
