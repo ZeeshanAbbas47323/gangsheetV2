@@ -2,7 +2,8 @@
 
 import { useMemo, useState } from "react";
 import { useExport } from "@/hooks/useExport";
-import { outputPixelSize, validateOutputSize } from "@/lib/export/render";
+import { outputPixelSize } from "@/lib/export/render";
+import { validatePngOutput } from "@/lib/export/pngStream";
 import {
   estimateFileSize,
   formatBytes,
@@ -55,7 +56,8 @@ export default function ExportModal() {
     try {
       for (const sh of sheets) {
         const p = outputPixelSize(sh.config.widthIn, sh.config.heightIn, dpi);
-        validateOutputSize(p.width, p.height);
+        // tall sheets are now streamed in tiles, so only truly huge outputs fail
+        validatePngOutput(p.width, p.height);
       }
       return null;
     } catch (e) {

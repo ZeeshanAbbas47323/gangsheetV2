@@ -1,5 +1,5 @@
 import { fontStack } from "../text";
-import type { LibraryAsset, TextElement } from "../types";
+import type { CanvasElement, LibraryAsset, TextElement } from "../types";
 import { ExportError, type ExportContext, type ProgressCallback } from "./types";
 
 /** Conservative cross-browser canvas ceilings (Chrome allows more). */
@@ -157,29 +157,7 @@ export async function renderSheetToCanvas(
   }
 
   for (let i = 0; i < visible.length; i++) {
-    const el = visible[i];
-    ctx.save();
-    ctx.translate(el.x * dpi, el.y * dpi);
-    ctx.rotate((el.rotation * Math.PI) / 180);
-    ctx.scale(el.flipX ? -1 : 1, el.flipY ? -1 : 1);
-    ctx.globalAlpha = el.opacity;
-
-    if (el.type === "text") {
-      drawText(ctx, el, dpi);
-    } else {
-      const img = images.get(el.assetId);
-      if (img) {
-        ctx.drawImage(
-          img,
-          (-el.widthIn / 2) * dpi,
-          (-el.heightIn / 2) * dpi,
-          el.widthIn * dpi,
-          el.heightIn * dpi
-        );
-      }
-    }
-    ctx.restore();
-
+    drawElement(ctx, visible[i], dpi, images);
     if (i % 20 === 19) {
       onProgress?.("rendering", 20 + ((i + 1) / visible.length) * 60);
       await yieldToUi();
@@ -187,6 +165,35 @@ export async function renderSheetToCanvas(
   }
   onProgress?.("rendering", 80);
   return canvas;
+}
+
+/** Draw one element at its sheet position (shared by full + tiled renderers). */
+export function drawElement(
+  ctx: CanvasRenderingContext2D,
+  el: CanvasElement,
+  dpi: number,
+  images: Map<string, HTMLImageElement>
+): void {
+  ctx.save();
+  ctx.translate(el.x * dpi, el.y * dpi);
+  ctx.rotate((el.rotation * Math.PI) / 180);
+  ctx.scale(el.flipX ? -1 : 1, el.flipY ? -1 : 1);
+  ctx.globalAlpha = el.opacity;
+  if (el.type === "text") {
+    drawText(ctx, el, dpi);
+  } else {
+    const img = images.get(el.assetId);
+    if (img) {
+      ctx.drawImage(
+        img,
+        (-el.widthIn / 2) * dpi,
+        (-el.heightIn / 2) * dpi,
+        el.widthIn * dpi,
+        el.heightIn * dpi
+      );
+    }
+  }
+  ctx.restore();
 }
 
 /**
