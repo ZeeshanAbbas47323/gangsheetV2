@@ -51,8 +51,9 @@ export class SkylineStrategy implements PackingStrategy {
         }
       };
 
+      // Prefer upright (0°); only try a 90° rotation if upright doesn't fit.
       tryFit(w, h, false);
-      if (bin.allowRotation && Math.abs(w - h) > 1e-9) tryFit(h, w, true);
+      if (!best && bin.allowRotation && Math.abs(w - h) > 1e-9) tryFit(h, w, true);
 
       if (!best) {
         overflow.push(item.id);

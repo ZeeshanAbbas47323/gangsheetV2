@@ -67,6 +67,8 @@ export interface BuilderState {
   aspectLock: boolean;
   showShortcuts: boolean;
   showExportModal: boolean;
+  /** Quality-check confirmation gate shown before the export modal. */
+  showQualityCheck: boolean;
   toasts: Toast[];
   uploads: UploadProgress[];
   quantity: number;
@@ -90,6 +92,7 @@ export interface BuilderState {
   setAspectLock: (locked: boolean) => void;
   setShowShortcuts: (show: boolean) => void;
   setShowExportModal: (show: boolean) => void;
+  setShowQualityCheck: (show: boolean) => void;
   setNestStats: (stats: NestStats | null) => void;
   applyNestResult: (
     placements: NestPlacement[],
@@ -255,6 +258,7 @@ export const useBuilder = create<BuilderState>((set, get) => {
     aspectLock: true,
     showShortcuts: false,
     showExportModal: false,
+    showQualityCheck: false,
     toasts: [],
     uploads: [],
     quantity: 1,
@@ -278,6 +282,7 @@ export const useBuilder = create<BuilderState>((set, get) => {
     setAspectLock: (aspectLock) => set({ aspectLock }),
     setShowShortcuts: (showShortcuts) => set({ showShortcuts }),
     setShowExportModal: (showExportModal) => set({ showExportModal }),
+    setShowQualityCheck: (showQualityCheck) => set({ showQualityCheck }),
     setNestStats: (nestStats) => set({ nestStats }),
 
     applyNestResult: (placements, overflowIds, scale) => {

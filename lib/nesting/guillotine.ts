@@ -41,6 +41,7 @@ export class GuillotineStrategy implements PackingStrategy {
       let bestIdx = -1;
       let bestRotated = false;
       let bestWaste = Infinity;
+      // Prefer upright: choose the best upright fit first.
       for (let i = 0; i < free.length; i++) {
         const f = free[i];
         if (w <= f.w + 1e-9 && h <= f.h + 1e-9) {
@@ -51,17 +52,18 @@ export class GuillotineStrategy implements PackingStrategy {
             bestRotated = false;
           }
         }
-        if (
-          bin.allowRotation &&
-          Math.abs(w - h) > 1e-9 &&
-          h <= f.w + 1e-9 &&
-          w <= f.h + 1e-9
-        ) {
-          const waste = f.w * f.h - w * h;
-          if (waste < bestWaste) {
-            bestWaste = waste;
-            bestIdx = i;
-            bestRotated = true;
+      }
+      // Only consider a 90° rotation when no upright spot was found.
+      if (bestIdx === -1 && bin.allowRotation && Math.abs(w - h) > 1e-9) {
+        for (let i = 0; i < free.length; i++) {
+          const f = free[i];
+          if (h <= f.w + 1e-9 && w <= f.h + 1e-9) {
+            const waste = f.w * f.h - w * h;
+            if (waste < bestWaste) {
+              bestWaste = waste;
+              bestIdx = i;
+              bestRotated = true;
+            }
           }
         }
       }

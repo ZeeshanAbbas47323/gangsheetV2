@@ -22,6 +22,7 @@ import { useBuilder } from "@/lib/store";
 import { measureText } from "@/lib/text";
 import { elementAABB, formatLength, type AABB } from "@/lib/units";
 import CanvasElementNode from "./CanvasElementNode";
+import CanvasScrollbars from "./CanvasScrollbars";
 import TextElementNode from "./TextElementNode";
 import { useUploads } from "./useUploads";
 
@@ -928,6 +929,11 @@ export default function CanvasStage() {
           />
         </Layer>
       </Stage>
+      )}
+
+      {/* draggable scrollbars for navigating large sheets */}
+      {size.width > 0 && size.height > 0 && (
+        <CanvasScrollbars width={size.width} height={size.height} />
       )}
 
       {/* live size readout */}

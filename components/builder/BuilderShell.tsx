@@ -10,6 +10,7 @@ import LibrarySidebar from "./LibrarySidebar";
 import NestPanel from "./NestPanel";
 import PlacementModal from "./PlacementModal";
 import PropertiesPanel from "./PropertiesPanel";
+import QualityCheckModal from "./QualityCheckModal";
 import Ruler, { RULER_THICKNESS } from "./Ruler";
 import SheetConfigPanel from "./SheetConfigPanel";
 import SheetInfoPanel from "./SheetInfoPanel";
@@ -71,6 +72,7 @@ export default function BuilderShell() {
 
       <Toasts />
       <ShortcutsModal />
+      <QualityCheckModal />
       <ExportModal />
       <ExportQueue />
       <PlacementModal />

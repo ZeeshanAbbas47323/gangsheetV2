@@ -58,7 +58,7 @@ export default function Toolbar() {
   const duplicateSelected = useBuilder((s) => s.duplicateSelected);
   const deleteSelected = useBuilder((s) => s.deleteSelected);
   const setShowShortcuts = useBuilder((s) => s.setShowShortcuts);
-  const setShowExportModal = useBuilder((s) => s.setShowExportModal);
+  const setShowQualityCheck = useBuilder((s) => s.setShowQualityCheck);
   const resetProject = useBuilder((s) => s.resetProject);
   const { saveProject, loadProjectFile } = usePersistence();
   const fileRef = useRef<HTMLInputElement>(null);
@@ -212,7 +212,7 @@ export default function Toolbar() {
 
       <button
         type="button"
-        onClick={() => setShowExportModal(true)}
+        onClick={() => setShowQualityCheck(true)}
         className="ml-1 flex h-8 items-center gap-1.5 rounded bg-accent px-3 text-xs font-semibold text-white transition-colors hover:bg-accent-hover"
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><path d="m7 10 5 5 5-5" /><path d="M12 15V3" /></svg>

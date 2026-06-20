@@ -31,8 +31,14 @@ export class RowStrategy implements PackingStrategy {
       let w = item.w + bin.spacing;
       let h = item.h + bin.spacing;
       let rotated = false;
-      // lay wide-short when rotation helps row density
-      if (bin.allowRotation && h > w) {
+      // Keep items upright; only rotate when upright is too wide for the sheet
+      // but the rotated orientation would fit the row width.
+      if (
+        bin.allowRotation &&
+        w > innerW + 1e-9 &&
+        h <= innerW + 1e-9 &&
+        Math.abs(w - h) > 1e-9
+      ) {
         [w, h] = [h, w];
         rotated = true;
       }

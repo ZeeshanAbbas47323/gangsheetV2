@@ -34,20 +34,33 @@ function nestOptions(margin = 0): NestOptions {
   };
 }
 
-/** Expand placement specs into one nest item per copy. */
+/**
+ * Expand placement specs into one nest item per copy. The item id encodes the
+ * spec INDEX (not the asset id) so multiple sizes of the same asset — e.g. a
+ * 4"×4" and a 2"×2" duplicate — resolve to the right dimensions on placement.
+ */
 function specsToItems(specs: PlacementSpec[]): NestItem[] {
   const items: NestItem[] = [];
-  for (const spec of specs) {
+  specs.forEach((spec, index) => {
     for (let i = 0; i < spec.quantity; i++) {
       items.push({
-        id: `${spec.assetId}#${uid()}`,
+        id: `${index}#${uid()}`,
         w: spec.widthIn,
         h: spec.heightIn,
         hash: `${spec.assetId}|${spec.widthIn.toFixed(3)}x${spec.heightIn.toFixed(3)}`,
       });
     }
-  }
+  });
   return items;
+}
+
+/** Resolve the placement spec an item id was generated from. */
+function specForPlacement(
+  id: string,
+  specs: PlacementSpec[]
+): PlacementSpec | undefined {
+  const index = parseInt(id.split("#")[0], 10);
+  return Number.isFinite(index) ? specs[index] : undefined;
 }
 
 function obstaclesFrom(elements: CanvasElement[]): ObstacleRect[] {
@@ -62,19 +75,18 @@ function obstaclesFrom(elements: CanvasElement[]): ObstacleRect[] {
 /** Turn nest placements into image elements, resolving each item's spec. */
 function placementsToElements(
   placements: NestPlacement[],
-  specByAsset: Map<string, PlacementSpec>
+  specs: PlacementSpec[]
 ): ImageElement[] {
   const { assets } = useBuilder.getState();
   const els: ImageElement[] = [];
   for (const p of placements) {
-    const assetId = p.id.split("#")[0];
-    const spec = specByAsset.get(assetId);
-    const asset = assets.find((a) => a.id === assetId);
+    const spec = specForPlacement(p.id, specs);
+    const asset = spec ? assets.find((a) => a.id === spec.assetId) : undefined;
     if (!spec || !asset) continue;
     els.push({
       id: uid(),
       type: "image",
-      assetId,
+      assetId: spec.assetId,
       name: asset.name,
       x: p.x + p.w / 2,
       y: p.y + p.h / 2,
@@ -161,7 +173,6 @@ export function usePlacement() {
     try {
       const { elements } = useBuilder.getState();
       const existing = elements;
-      const specByAsset = new Map(specs.map((s) => [s.assetId, s]));
 
       // UPDATED: fit as much as possible onto ONE sheet by letting the active
       // sheet grow up to the 300" maximum; only spill the genuine overflow.
@@ -171,7 +182,7 @@ export function usePlacement() {
         firstObstacles: obstaclesFrom(existing),
       });
 
-      commitPacked(sheets, specByAsset, existing, undefined, unplaceable.length);
+      commitPacked(sheets, specs, existing, undefined, unplaceable.length);
     } catch (err) {
       reportError(err, "Placement failed");
     } finally {
@@ -190,13 +201,12 @@ export function usePlacement() {
     try {
       const { elements } = useBuilder.getState();
       const existing = elements;
-      const specByAsset = new Map(specs.map((s) => [s.assetId, s]));
 
       const { sheets, unplaceable } = await packIntoSheets(items, {
         firstObstacles: obstaclesFrom(existing),
       });
 
-      commitPacked(sheets, specByAsset, existing, undefined, unplaceable.length);
+      commitPacked(sheets, specs, existing, undefined, unplaceable.length);
     } catch (err) {
       reportError(err, "Auto Build failed");
     } finally {
@@ -266,7 +276,7 @@ export function usePlacement() {
 // ---------------------------------------------------------------------------
 function commitPacked(
   packed: PackedSheet[],
-  specByAsset: Map<string, PlacementSpec>,
+  specs: PlacementSpec[],
   existing: CanvasElement[],
   fixedActiveHeight: number | undefined,
   unplaceableCount: number
@@ -279,12 +289,12 @@ function commitPacked(
 
   const activeEls = [
     ...existing,
-    ...placementsToElements(packed[0].placements, specByAsset),
+    ...placementsToElements(packed[0].placements, specs),
   ];
   const activeHeight = fixedActiveHeight ?? packed[0].heightIn;
   const extra: SheetBuild[] = packed.slice(1).map((s) => ({
     heightIn: s.heightIn,
-    elements: placementsToElements(s.placements, specByAsset),
+    elements: placementsToElements(s.placements, specs),
   }));
 
   store.commitBuild(activeEls, activeHeight, extra);

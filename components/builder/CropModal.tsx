@@ -1,9 +1,10 @@
 "use client";
 
-// NEW CHANGE: custom HTML5-canvas crop tool (no external crop package).
-// The crop rectangle is stored as fractions of the image (0..1) so it is
-// resolution-independent; on apply we draw the selected region from the
-// full-resolution source onto a canvas and replace the asset.
+// Custom HTML5-canvas crop tool (no external crop package). The crop rectangle
+// is stored as fractions of the image (0..1) so it is resolution-independent.
+// NEW CHANGE: zoom in/out + slider with panning, for precise cropping. The
+// image is scaled/panned inside a fixed viewport while the crop overlay is
+// drawn in viewport coordinates so its handles stay crisp at any zoom.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useBuilder } from "@/lib/store";
@@ -16,10 +17,12 @@ interface Rect {
   h: number;
 }
 
-type Handle = "move" | "nw" | "ne" | "sw" | "se";
+type Handle = "move" | "nw" | "ne" | "sw" | "se" | "pan";
 
-const MIN_FRAC = 0.05; // smallest crop is 5% of a side
+const MIN_FRAC = 0.05;
 const MAX_DISPLAY = 460;
+const MIN_ZOOM = 1;
+const MAX_ZOOM = 6;
 
 interface Props {
   asset: LibraryAsset;
@@ -31,15 +34,24 @@ export default function CropModal({ asset, onClose }: Props) {
   const pushToast = useBuilder((s) => s.pushToast);
 
   const [crop, setCrop] = useState<Rect>({ x: 0.1, y: 0.1, w: 0.8, h: 0.8 });
-  const containerRef = useRef<HTMLDivElement>(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+
+  // live mirrors so the global pointer handler reads current zoom/pan
+  const zoomRef = useRef(zoom);
+  const panRef = useRef(pan);
+  zoomRef.current = zoom;
+  panRef.current = pan;
+
   const dragRef = useRef<{
     handle: Handle;
     startX: number;
     startY: number;
-    start: Rect;
+    startCrop: Rect;
+    startPan: { x: number; y: number };
   } | null>(null);
 
-  // display size preserving aspect ratio, capped to MAX_DISPLAY
+  // base display size (fit to MAX_DISPLAY at zoom 1), preserving aspect ratio
   const display = useMemo(() => {
     const ratio = asset.naturalWidth / asset.naturalHeight;
     let w = MAX_DISPLAY;
@@ -51,20 +63,49 @@ export default function CropModal({ asset, onClose }: Props) {
     return { w: Math.round(w), h: Math.round(h) };
   }, [asset.naturalWidth, asset.naturalHeight]);
 
-  const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+  const imgW = display.w * zoom;
+  const imgH = display.h * zoom;
 
-  // pointer drag handling for move + corner resize
+  const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+  const clampPan = (p: { x: number; y: number }, z: number) => ({
+    x: Math.min(0, Math.max(display.w - display.w * z, p.x)),
+    y: Math.min(0, Math.max(display.h - display.h * z, p.y)),
+  });
+
+  const setZoomAround = (next: number) => {
+    const z = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, next));
+    // keep the viewport centre stable while zooming
+    const cx = display.w / 2;
+    const cy = display.h / 2;
+    setPan((p) => {
+      const ratio = z / zoomRef.current;
+      const np = { x: cx - (cx - p.x) * ratio, y: cy - (cy - p.y) * ratio };
+      return clampPan(np, z);
+    });
+    setZoom(z);
+    if (z === 1) setPan({ x: 0, y: 0 });
+  };
+
   useEffect(() => {
     const onMove = (e: PointerEvent) => {
-      const ctx = dragRef.current;
-      const rect = containerRef.current?.getBoundingClientRect();
-      if (!ctx || !rect) return;
-      const dx = (e.clientX - ctx.startX) / rect.width;
-      const dy = (e.clientY - ctx.startY) / rect.height;
-      const s = ctx.start;
-
+      const d = dragRef.current;
+      if (!d) return;
+      const z = zoomRef.current;
+      if (d.handle === "pan") {
+        setPan(
+          clampPan(
+            { x: d.startPan.x + (e.clientX - d.startX), y: d.startPan.y + (e.clientY - d.startY) },
+            z
+          )
+        );
+        return;
+      }
+      // crop edits: convert screen delta → image fraction (account for zoom)
+      const dx = (e.clientX - d.startX) / (display.w * z);
+      const dy = (e.clientY - d.startY) / (display.h * z);
+      const s = d.startCrop;
       setCrop(() => {
-        if (ctx.handle === "move") {
+        if (d.handle === "move") {
           return {
             ...s,
             x: clamp01(Math.min(s.x + dx, 1 - s.w)),
@@ -74,21 +115,20 @@ export default function CropModal({ asset, onClose }: Props) {
         let { x, y, w, h } = s;
         const right = s.x + s.w;
         const bottom = s.y + s.h;
-        if (ctx.handle === "nw") {
+        if (d.handle === "nw") {
           x = clamp01(Math.min(s.x + dx, right - MIN_FRAC));
           y = clamp01(Math.min(s.y + dy, bottom - MIN_FRAC));
           w = right - x;
           h = bottom - y;
-        } else if (ctx.handle === "ne") {
+        } else if (d.handle === "ne") {
           y = clamp01(Math.min(s.y + dy, bottom - MIN_FRAC));
           w = clamp01(Math.max(MIN_FRAC, Math.min(s.w + dx, 1 - s.x)));
           h = bottom - y;
-        } else if (ctx.handle === "sw") {
+        } else if (d.handle === "sw") {
           x = clamp01(Math.min(s.x + dx, right - MIN_FRAC));
           w = right - x;
           h = clamp01(Math.max(MIN_FRAC, Math.min(s.h + dy, 1 - s.y)));
         } else {
-          // se
           w = clamp01(Math.max(MIN_FRAC, Math.min(s.w + dx, 1 - s.x)));
           h = clamp01(Math.max(MIN_FRAC, Math.min(s.h + dy, 1 - s.y)));
         }
@@ -104,19 +144,25 @@ export default function CropModal({ asset, onClose }: Props) {
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
     };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [display.w, display.h]);
 
   const startDrag = (handle: Handle) => (e: React.PointerEvent) => {
-    e.stopPropagation();
-    dragRef.current = { handle, startX: e.clientX, startY: e.clientY, start: crop };
+    if (handle !== "pan") e.stopPropagation();
+    dragRef.current = {
+      handle,
+      startX: e.clientX,
+      startY: e.clientY,
+      startCrop: crop,
+      startPan: panRef.current,
+    };
   };
 
-  const apply = async () => {
+  const apply = () => {
     const sx = Math.round(crop.x * asset.naturalWidth);
     const sy = Math.round(crop.y * asset.naturalHeight);
     const sw = Math.max(1, Math.round(crop.w * asset.naturalWidth));
     const sh = Math.max(1, Math.round(crop.h * asset.naturalHeight));
-
     const canvas = document.createElement("canvas");
     canvas.width = sw;
     canvas.height = sh;
@@ -129,9 +175,8 @@ export default function CropModal({ asset, onClose }: Props) {
     img.crossOrigin = "anonymous";
     img.onload = () => {
       ctx.drawImage(img, sx, sy, sw, sh, 0, 0, sw, sh);
-      const src = canvas.toDataURL("image/png");
       updateAsset(asset.id, {
-        src,
+        src: canvas.toDataURL("image/png"),
         naturalWidth: sw,
         naturalHeight: sh,
         mimeType: "image/png",
@@ -144,7 +189,15 @@ export default function CropModal({ asset, onClose }: Props) {
     img.src = asset.src;
   };
 
-  const handles: { id: Exclude<Handle, "move">; cls: string; cursor: string }[] = [
+  // crop window in viewport (screen) coordinates
+  const cw = {
+    left: pan.x + crop.x * imgW,
+    top: pan.y + crop.y * imgH,
+    width: crop.w * imgW,
+    height: crop.h * imgH,
+  };
+
+  const handles: { id: Exclude<Handle, "move" | "pan">; cls: string; cursor: string }[] = [
     { id: "nw", cls: "left-0 top-0 -translate-x-1/2 -translate-y-1/2", cursor: "nwse-resize" },
     { id: "ne", cls: "right-0 top-0 translate-x-1/2 -translate-y-1/2", cursor: "nesw-resize" },
     { id: "sw", cls: "left-0 bottom-0 -translate-x-1/2 translate-y-1/2", cursor: "nesw-resize" },
@@ -175,30 +228,36 @@ export default function CropModal({ asset, onClose }: Props) {
           </button>
         </div>
 
+        {/* viewport */}
         <div
-          ref={containerRef}
-          className="relative mx-auto select-none touch-none bg-[conic-gradient(#e3e6ea_90deg,#f7f8fa_90deg_180deg,#e3e6ea_180deg_270deg,#f7f8fa_270deg)] bg-[length:16px_16px]"
-          style={{ width: display.w, height: display.h }}
+          onPointerDown={zoom > 1 ? startDrag("pan") : undefined}
+          className="relative mx-auto select-none overflow-hidden touch-none bg-[conic-gradient(#e3e6ea_90deg,#f7f8fa_90deg_180deg,#e3e6ea_180deg_270deg,#f7f8fa_270deg)] bg-[length:16px_16px]"
+          style={{ width: display.w, height: display.h, cursor: zoom > 1 ? "grab" : "default" }}
         >
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={asset.src}
-            alt={asset.name}
-            className="pointer-events-none absolute inset-0 h-full w-full object-contain"
-            draggable={false}
-          />
-          {/* dim overlay */}
-          <div className="pointer-events-none absolute inset-0 bg-black/45" />
-          {/* crop window (clear) */}
+          {/* scaled/panned image */}
+          <div
+            className="absolute left-0 top-0"
+            style={{ width: imgW, height: imgH, transform: `translate(${pan.x}px, ${pan.y}px)` }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={asset.src}
+              alt={asset.name}
+              className="pointer-events-none h-full w-full object-fill"
+              draggable={false}
+            />
+          </div>
+
+          {/* crop window (screen coords), dims everything outside it */}
           <div
             onPointerDown={startDrag("move")}
-            className="absolute cursor-move border border-accent shadow-[0_0_0_9999px_rgba(0,0,0,0)]"
+            className="absolute cursor-move border border-accent"
             style={{
-              left: `${crop.x * 100}%`,
-              top: `${crop.y * 100}%`,
-              width: `${crop.w * 100}%`,
-              height: `${crop.h * 100}%`,
-              boxShadow: "0 0 0 9999px rgba(0,0,0,0.45)",
+              left: cw.left,
+              top: cw.top,
+              width: cw.width,
+              height: cw.height,
+              boxShadow: "0 0 0 9999px rgba(0,0,0,0.5)",
             }}
           >
             {handles.map((h) => (
@@ -212,13 +271,53 @@ export default function CropModal({ asset, onClose }: Props) {
           </div>
         </div>
 
+        {/* zoom controls */}
+        <div className="mt-3 flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setZoomAround(zoom / 1.25)}
+            disabled={zoom <= MIN_ZOOM}
+            title="Zoom out"
+            aria-label="Zoom out"
+            className="flex h-7 w-7 items-center justify-center rounded border border-surface-3 text-gray-300 hover:border-gray-500 disabled:opacity-30"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M5 12h14" /></svg>
+          </button>
+          <input
+            type="range"
+            min={MIN_ZOOM}
+            max={MAX_ZOOM}
+            step={0.1}
+            value={zoom}
+            onChange={(e) => setZoomAround(parseFloat(e.target.value))}
+            className="flex-1 accent-[#4f8ef7]"
+            aria-label="Zoom"
+          />
+          <button
+            type="button"
+            onClick={() => setZoomAround(zoom * 1.25)}
+            disabled={zoom >= MAX_ZOOM}
+            title="Zoom in"
+            aria-label="Zoom in"
+            className="flex h-7 w-7 items-center justify-center rounded border border-surface-3 text-gray-300 hover:border-gray-500 disabled:opacity-30"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+          </button>
+          <span className="w-10 text-right text-xs tabular-nums text-gray-400">
+            {Math.round(zoom * 100)}%
+          </span>
+        </div>
+
         <div className="mt-4 flex items-center justify-between gap-3">
           <button
             type="button"
-            onClick={() => setCrop({ x: 0, y: 0, w: 1, h: 1 })}
+            onClick={() => {
+              setCrop({ x: 0, y: 0, w: 1, h: 1 });
+              setZoomAround(1);
+            }}
             className="rounded px-3 py-1.5 text-xs text-gray-300 hover:bg-surface-3"
           >
-            Reset selection
+            Reset
           </button>
           <div className="flex gap-2">
             <button
@@ -230,7 +329,7 @@ export default function CropModal({ asset, onClose }: Props) {
             </button>
             <button
               type="button"
-              onClick={() => void apply()}
+              onClick={apply}
               className="rounded bg-accent px-4 py-1.5 text-sm font-semibold text-white hover:bg-accent-hover"
             >
               Apply crop

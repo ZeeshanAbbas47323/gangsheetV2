@@ -114,9 +114,12 @@ export class MaxRectsStrategy implements PackingStrategy {
       }
     };
 
-    for (const f of free) {
-      consider(f, w, h, false);
-      if (allowRotation && Math.abs(w - h) > 1e-9) consider(f, h, w, true);
+    // Prefer the upright (0°) orientation: only fall back to a 90° rotation
+    // when the item cannot be placed upright anywhere.
+    for (const f of free) consider(f, w, h, false);
+    if (best) return best;
+    if (allowRotation && Math.abs(w - h) > 1e-9) {
+      for (const f of free) consider(f, h, w, true);
     }
     return best;
   }
