@@ -12,7 +12,9 @@
       "Bash(rm -rf docs/_render)",
       "Bash(rm -f docs/screenshots/03a_scattered.png docs/screenshots/03b_nested.png docs/screenshots/03b_nested__stage.png)",
       "Read(//e/e/claude/V2/Pro/app/**)",
-      "Read(//e/e/claude/V2/Pro/**)"
+      "Read(//e/e/claude/V2/Pro/**)",
+      "Bash(python -m pip install imageio-ffmpeg)",
+      "Bash(python -c \"import imageio_ffmpeg; print\\('EXE:', imageio_ffmpeg.get_ffmpeg_exe\\(\\)\\)\")"
     ]
   }
 }

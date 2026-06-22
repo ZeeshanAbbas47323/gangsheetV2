@@ -1,12 +1,13 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useImageTools } from "@/hooks/useImageTools";
 import { usePlacement } from "@/hooks/usePlacement";
 import { DEFAULT_ASSET_DPI } from "@/lib/files";
 import { uid } from "@/lib/id";
 import { useBuilder } from "@/lib/store";
 import type { PlacementSpec } from "@/lib/types";
-import { effectiveDpi, LOW_DPI_THRESHOLD } from "@/lib/units";
+import { effectiveDpi } from "@/lib/units";
 import ImageEditModal from "./ImageEditModal";
 import NumField from "./NumField";
 
@@ -21,18 +22,82 @@ interface Row {
   aspectLocked: boolean;
 }
 
+/** Small on/off toggle (with a busy spinner) used for the image-tool switches. */
+function Toggle({
+  on,
+  busy,
+  onClick,
+  label,
+}: {
+  on: boolean;
+  busy: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      aria-label={label}
+      disabled={busy || on}
+      onClick={onClick}
+      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed ${
+        on ? "bg-accent" : "bg-surface-3"
+      } ${busy ? "opacity-70" : ""}`}
+    >
+      {busy ? (
+        <span className="absolute left-1/2 top-1/2 h-3 w-3 -translate-x-1/2 -translate-y-1/2 animate-spin rounded-full border border-white/70 border-t-transparent" />
+      ) : (
+        <span
+          className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-transform ${
+            on ? "translate-x-[18px]" : "translate-x-0.5"
+          }`}
+        />
+      )}
+    </button>
+  );
+}
+
+/** Vertical +/- stepper attached to a numeric field. */
+function Stepper({ onUp, onDown }: { onUp: () => void; onDown: () => void }) {
+  return (
+    <span className="flex flex-col">
+      <button
+        type="button"
+        tabIndex={-1}
+        onClick={onUp}
+        aria-label="Increase"
+        className="flex h-[13px] w-5 items-center justify-center rounded-t border border-surface-3 text-gray-400 hover:bg-surface-3 hover:text-white"
+      >
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 15 6-6 6 6" /></svg>
+      </button>
+      <button
+        type="button"
+        tabIndex={-1}
+        onClick={onDown}
+        aria-label="Decrease"
+        className="flex h-[13px] w-5 items-center justify-center rounded-b border border-t-0 border-surface-3 text-gray-400 hover:bg-surface-3 hover:text-white"
+      >
+        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="m6 9 6 6 6-6" /></svg>
+      </button>
+    </span>
+  );
+}
+
 export default function PlacementModal() {
   const pending = useBuilder((s) => s.pendingPlacement);
   const assets = useBuilder((s) => s.assets);
   const sheet = useBuilder((s) => s.sheet);
   const dequeuePlacement = useBuilder((s) => s.dequeuePlacement);
   const clearPlacementQueue = useBuilder((s) => s.clearPlacementQueue);
+  const setCroppingAsset = useBuilder((s) => s.setCroppingAsset);
   const { placeAssets, autoBuild, busy } = usePlacement();
+  const { processAsset, processing } = useImageTools();
 
   const [rows, setRows] = useState<Row[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // default size for an asset: natural size at its DPI, capped to ~90% of sheet
   const defaultRow = (assetId: string): Row | null => {
     const asset = assets.find((a) => a.id === assetId);
     if (!asset) return null;
@@ -45,8 +110,6 @@ export default function PlacementModal() {
     return { rowId: uid(), assetId, widthIn: w, heightIn: h, quantity: 1, aspectLocked: true };
   };
 
-  // keep rows in sync with the pending queue: drop removed assets, add one
-  // default row for each newly queued asset (existing rows are preserved).
   useEffect(() => {
     setRows((prev) => {
       let next = prev.filter((r) => pending.includes(r.assetId));
@@ -66,8 +129,6 @@ export default function PlacementModal() {
   const patchRow = (rowId: string, patch: Partial<Row>) =>
     setRows((prev) => prev.map((r) => (r.rowId === rowId ? { ...r, ...patch } : r)));
 
-  // NEW CHANGE: duplicate a row at a different (default: half) size so the same
-  // image can be placed at multiple sizes independently.
   const duplicateRow = (rowId: string) =>
     setRows((prev) => {
       const i = prev.findIndex((r) => r.rowId === rowId);
@@ -86,10 +147,7 @@ export default function PlacementModal() {
   const removeRow = (row: Row) => {
     const remaining = rows.filter((r) => r.rowId !== row.rowId);
     setRows(remaining);
-    // if that asset has no rows left, drop it from the batch entirely
-    if (!remaining.some((r) => r.assetId === row.assetId)) {
-      dequeuePlacement(row.assetId);
-    }
+    if (!remaining.some((r) => r.assetId === row.assetId)) dequeuePlacement(row.assetId);
     if (remaining.length === 0) clearPlacementQueue();
   };
 
@@ -121,7 +179,7 @@ export default function PlacementModal() {
       aria-label="Set size and quantity"
     >
       <div
-        className="flex max-h-[85vh] w-full max-w-xl flex-col rounded-xl border border-surface-3 bg-surface-1 shadow-2xl"
+        className="flex max-h-[88vh] w-full max-w-2xl flex-col rounded-xl border border-surface-3 bg-surface-1 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-surface-3 px-5 py-3.5">
@@ -141,134 +199,220 @@ export default function PlacementModal() {
           </button>
         </div>
 
-        <div className="flex-1 space-y-2 overflow-y-auto p-4">
+        <div className="flex-1 space-y-3 overflow-y-auto p-4">
           {visibleRows.map((row) => {
             const asset = assets.find((a) => a.id === row.assetId)!;
             const ratio = asset.naturalHeight / asset.naturalWidth;
-            const dpiAtSize = effectiveDpi(asset.naturalWidth, row.widthIn);
-            const lowDpi = dpiAtSize < LOW_DPI_THRESHOLD;
+            const dpi = effectiveDpi(asset.naturalWidth, row.widthIn);
+            const quality =
+              dpi >= 300
+                ? { label: "Optimal", color: "#22c55e" }
+                : dpi >= 150
+                  ? { label: "Good", color: "#eab308" }
+                  : { label: "Low resolution", color: "#ef4444" };
+            const proc = processing[asset.id];
+
+            const setWidth = (v: number) =>
+              patchRow(row.rowId, {
+                widthIn: v,
+                ...(row.aspectLocked ? { heightIn: +(v * ratio).toFixed(2) } : {}),
+              });
+            const setHeight = (v: number) =>
+              patchRow(row.rowId, {
+                heightIn: v,
+                ...(row.aspectLocked ? { widthIn: +(v / ratio).toFixed(2) } : {}),
+              });
+
             return (
               <div
                 key={row.rowId}
-                className="flex flex-wrap items-center gap-3 rounded-lg border border-surface-3 bg-surface-2 p-2.5 sm:flex-nowrap"
+                className="overflow-hidden rounded-lg border border-surface-3 bg-surface-2"
               >
-                <div className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded bg-[conic-gradient(#e3e6ea_90deg,#f7f8fa_90deg_180deg,#e3e6ea_180deg_270deg,#f7f8fa_270deg)] bg-[length:12px_12px]">
-                  {/* eslint-disable-next-line @next/next/no-img-element */}
-                  <img
-                    src={asset.src}
-                    alt={asset.name}
-                    className="max-h-full max-w-full object-contain"
-                    draggable={false}
-                  />
-                </div>
-
-                <div className="min-w-0 flex-1">
-                  <p className="truncate text-xs font-medium text-gray-200">{asset.name}</p>
-                  <p className="text-[10px] text-gray-500">
-                    {asset.naturalWidth}×{asset.naturalHeight}px ·{" "}
-                    {asset.dpi ? `${asset.dpi} DPI (file)` : `${DEFAULT_ASSET_DPI} DPI (assumed)`}
-                  </p>
-                  {lowDpi && (
-                    <p className="text-[10px] text-red-400">
-                      ⚠ {Math.round(dpiAtSize)} DPI at this size
-                    </p>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setEditingId(asset.id)}
-                    className="mt-1 inline-flex items-center gap-1 rounded border border-surface-3 px-1.5 py-0.5 text-[10px] text-gray-300 hover:border-accent hover:text-white"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>
-                    Edit Image
-                  </button>
-                </div>
-
-                <div className="flex items-center gap-1.5">
-                  <div className="w-[88px]">
-                    <NumField
-                      label="W"
-                      value={row.widthIn}
-                      min={0.25}
-                      max={sheet.widthIn}
-                      suffix="in"
-                      onCommit={(v) =>
-                        patchRow(row.rowId, {
-                          widthIn: v,
-                          ...(row.aspectLocked ? { heightIn: v * ratio } : {}),
-                        })
-                      }
+                <div className="flex flex-col gap-4 p-3 sm:flex-row">
+                  {/* big preview for easy checking */}
+                  <div className="flex h-44 w-full shrink-0 items-center justify-center overflow-hidden rounded-lg bg-[conic-gradient(#e3e6ea_90deg,#f7f8fa_90deg_180deg,#e3e6ea_180deg_270deg,#f7f8fa_270deg)] bg-[length:18px_18px] sm:w-44">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={asset.src}
+                      alt={asset.name}
+                      className="max-h-full max-w-full object-contain"
+                      draggable={false}
                     />
                   </div>
-                  <button
-                    type="button"
-                    title={row.aspectLocked ? "Unlock aspect ratio" : "Lock aspect ratio"}
-                    onClick={() => patchRow(row.rowId, { aspectLocked: !row.aspectLocked })}
-                    className={`flex h-[26px] w-6 shrink-0 items-center justify-center rounded border text-gray-300 ${
-                      row.aspectLocked ? "border-accent bg-accent/15" : "border-surface-3"
-                    }`}
-                  >
-                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      {row.aspectLocked ? (
-                        <>
-                          <rect x="3" y="11" width="18" height="11" rx="2" />
-                          <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-                        </>
-                      ) : (
-                        <>
-                          <rect x="3" y="11" width="18" height="11" rx="2" />
-                          <path d="M7 11V7a5 5 0 0 1 9.9-1" />
-                        </>
-                      )}
-                    </svg>
-                  </button>
-                  <div className="w-[88px]">
-                    <NumField
-                      label="H"
-                      value={row.heightIn}
-                      min={0.25}
-                      max={240}
-                      suffix="in"
-                      onCommit={(v) =>
-                        patchRow(row.rowId, {
-                          heightIn: v,
-                          ...(row.aspectLocked ? { widthIn: v / ratio } : {}),
-                        })
-                      }
-                    />
+
+                  {/* controls */}
+                  <div className="flex min-w-0 flex-1 flex-col gap-2.5">
+                    <p className="truncate text-xs font-medium text-gray-300">{asset.name}</p>
+
+                    {/* Width */}
+                    <div className="flex items-center gap-2">
+                      <span className="w-14 shrink-0 text-xs text-gray-400">Width</span>
+                      <div className="w-28">
+                        <NumField
+                          label=""
+                          value={row.widthIn}
+                          min={0.25}
+                          max={sheet.widthIn}
+                          onCommit={setWidth}
+                        />
+                      </div>
+                      <Stepper
+                        onUp={() => setWidth(+(row.widthIn + 0.1).toFixed(2))}
+                        onDown={() => setWidth(Math.max(0.25, +(row.widthIn - 0.1).toFixed(2)))}
+                      />
+                      <span className="text-xs text-gray-500">in</span>
+                    </div>
+
+                    {/* Height */}
+                    <div className="flex items-center gap-2">
+                      <span className="w-14 shrink-0 text-xs text-gray-400">Height</span>
+                      <div className="w-28">
+                        <NumField
+                          label=""
+                          value={row.heightIn}
+                          min={0.25}
+                          max={240}
+                          onCommit={setHeight}
+                        />
+                      </div>
+                      <Stepper
+                        onUp={() => setHeight(+(row.heightIn + 0.1).toFixed(2))}
+                        onDown={() => setHeight(Math.max(0.25, +(row.heightIn - 0.1).toFixed(2)))}
+                      />
+                      <span className="text-xs text-gray-500">in</span>
+                    </div>
+
+                    {/* Lock aspect ratio */}
+                    <button
+                      type="button"
+                      onClick={() => patchRow(row.rowId, { aspectLocked: !row.aspectLocked })}
+                      className="flex w-fit items-center gap-2 text-xs text-gray-300"
+                    >
+                      <span
+                        className={`flex h-4 w-4 items-center justify-center rounded border ${
+                          row.aspectLocked ? "border-accent bg-accent text-white" : "border-surface-3"
+                        }`}
+                      >
+                        {row.aspectLocked && (
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6 9 17l-5-5" /></svg>
+                        )}
+                      </span>
+                      Lock Aspect Ratio
+                    </button>
+
+                    {/* DPI / quality indicator */}
+                    <div className="flex items-center gap-2 text-xs">
+                      <span
+                        className="h-3.5 w-3.5 shrink-0 rounded-sm"
+                        style={{ backgroundColor: quality.color }}
+                      />
+                      <span style={{ color: quality.color }}>{quality.label}</span>
+                      <span className="ml-auto tabular-nums text-gray-500">
+                        ({Math.round(dpi)} DPI)
+                      </span>
+                    </div>
+
+                    {/* Remove Background toggle */}
+                    <div className="flex items-center justify-between text-xs text-gray-300">
+                      <span>
+                        Remove Background
+                        {asset.bgRemoved && <span className="ml-1 text-emerald-400">✓</span>}
+                      </span>
+                      <Toggle
+                        on={!!asset.bgRemoved}
+                        busy={proc === "remove-bg"}
+                        onClick={() => void processAsset(asset.id, "remove-bg")}
+                        label="Remove background"
+                      />
+                    </div>
+
+                    {/* Upscale toggle */}
+                    <div className="flex items-center justify-between text-xs text-gray-300">
+                      <span>
+                        Upscale
+                        {asset.upscaled && <span className="ml-1 text-emerald-400">✓</span>}
+                      </span>
+                      <Toggle
+                        on={!!asset.upscaled}
+                        busy={proc === "upscale"}
+                        onClick={() => void processAsset(asset.id, "upscale")}
+                        label="Upscale"
+                      />
+                    </div>
+
+                    {/* secondary edit tools */}
+                    <div className="flex items-center gap-3 pt-0.5 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => setCroppingAsset(asset.id)}
+                        className="inline-flex items-center gap-1 text-gray-400 hover:text-accent"
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14M2 6h14a2 2 0 0 1 2 2v14" /></svg>
+                        Crop
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEditingId(asset.id)}
+                        className="inline-flex items-center gap-1 text-gray-400 hover:text-accent"
+                      >
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z" /></svg>
+                        More edits
+                      </button>
+                    </div>
                   </div>
-                  <div className="w-[72px]">
-                    <NumField
-                      label="×"
-                      value={row.quantity}
+                </div>
+
+                {/* footer row: quantity + duplicate + remove */}
+                <div className="flex items-center justify-between border-t border-surface-3 bg-surface-1/40 px-3 py-2">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => patchRow(row.rowId, { quantity: Math.max(1, row.quantity - 1) })}
+                      className="flex h-7 w-7 items-center justify-center rounded border border-surface-3 text-gray-300 hover:border-gray-500"
+                      aria-label="Decrease quantity"
+                    >
+                      −
+                    </button>
+                    <input
+                      type="number"
                       min={1}
                       max={500}
-                      step={1}
-                      decimals={0}
-                      onCommit={(v) => patchRow(row.rowId, { quantity: Math.round(v) })}
+                      value={row.quantity}
+                      onChange={(e) =>
+                        patchRow(row.rowId, {
+                          quantity: Math.max(1, Math.min(500, parseInt(e.target.value, 10) || 1)),
+                        })
+                      }
+                      className="h-7 w-14 rounded border border-surface-3 bg-surface-2 text-center text-xs tabular-nums text-gray-100 outline-none focus:border-accent [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+                      aria-label="Quantity"
                     />
+                    <button
+                      type="button"
+                      onClick={() => patchRow(row.rowId, { quantity: Math.min(500, row.quantity + 1) })}
+                      className="flex h-7 w-7 items-center justify-center rounded border border-surface-3 text-gray-300 hover:border-gray-500"
+                      aria-label="Increase quantity"
+                    >
+                      +
+                    </button>
                   </div>
-                </div>
-
-                <div className="flex shrink-0 items-center gap-0.5">
-                  {/* NEW CHANGE: duplicate this image at a different size */}
-                  <button
-                    type="button"
-                    onClick={() => duplicateRow(row.rowId)}
-                    title="Duplicate at a different size"
-                    aria-label={`Duplicate ${asset.name} at a different size`}
-                    className="rounded p-1 text-gray-400 hover:bg-surface-3 hover:text-accent"
-                  >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => removeRow(row)}
-                    title="Remove this row"
-                    aria-label={`Remove ${asset.name} row`}
-                    className="rounded p-1 text-gray-500 hover:bg-surface-3 hover:text-red-400"
-                  >
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12" /></svg>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => duplicateRow(row.rowId)}
+                      className="flex items-center gap-1.5 rounded bg-surface-3 px-3 py-1.5 text-xs font-medium text-gray-100 hover:bg-surface-3/70"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></svg>
+                      Duplicate
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => removeRow(row)}
+                      className="flex items-center gap-1.5 rounded bg-red-600/90 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-600"
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2m3 0v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" /></svg>
+                      Remove
+                    </button>
+                  </div>
                 </div>
               </div>
             );
